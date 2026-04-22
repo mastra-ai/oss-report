@@ -6,5 +6,10 @@ dist
 .env
 *.db
 *.db-*
+*.duckdb
+*.duckdb.*
 .netlify
 .vercel
+
+# web app build output
+apps/web/dist

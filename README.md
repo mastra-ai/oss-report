@@ -1,30 +1,90 @@
-# zzz
+# OSS Report
 
-Welcome to your new [Mastra](https://mastra.ai/) project! We're excited to see what you'll build.
+Monorepo for generating and browsing weekly OSS health reports for `mastra-ai/mastra`.
 
-## Getting Started
+## Structure
 
-Start the development server:
-
-```shell
-pnpm run dev
+```
+apps/
+├── mastra/   Mastra app: agents + workflow that produce the report
+└── web/      Vite + React + Tailwind + shadcn UI for browsing reports
 ```
 
-Open [http://localhost:4111](http://localhost:4111) in your browser to access [Mastra Studio](https://mastra.ai/docs/studio/overview). It provides an interactive UI for building and testing your agents, along with a REST API that exposes your Mastra application as a local service. This lets you start building without worrying about integration right away.
+## Requirements
 
-You can start editing files inside the `src/mastra` directory. The development server will automatically reload whenever you make changes.
+- Node `>=22.13.0`
+- pnpm `10.x`
 
-## Learn more
+## Setup
 
-To learn more about Mastra, visit our [documentation](https://mastra.ai/docs/). Your bootstrapped project includes example code for [agents](https://mastra.ai/docs/agents/overview), [tools](https://mastra.ai/docs/agents/using-tools), [workflows](https://mastra.ai/docs/workflows/overview), [scorers](https://mastra.ai/docs/evals/overview), and [observability](https://mastra.ai/docs/observability/overview).
+```bash
+pnpm install
+cp apps/mastra/.env.example apps/mastra/.env
+cp apps/web/.env.example apps/web/.env  # optional, only if Mastra isn't on :4111
+```
 
-If you're new to AI agents, check out our [course](https://mastra.ai/learn) and [YouTube videos](https://youtube.com/@mastra-ai). You can also join our [Discord](https://discord.gg/BTYqqHKUrf) community to get help and share your projects.
+Fill in `apps/mastra/.env`:
 
-## Deploy to the Mastra platform
+- `OPENAI_API_KEY`
+- `GITHUB_PERSONAL_ACCESS_TOKEN`
+- `DISCORD_BOT_TOKEN`
+- `DISCORD_GENERAL_CHANNEL_ID`
 
-The [Mastra platform](https://projects.mastra.ai) provides two products for deploying and managing AI applications built with the Mastra framework:
+## Develop
 
-- **Studio**: A hosted visual environment for testing agents, running workflows, and inspecting traces
-- **Server**: A production deployment target that runs your Mastra application as an API server
+Run both apps at once:
 
-Learn more in the [Mastra platform documentation](https://mastra.ai/docs/mastra-platform/overview).
+```bash
+pnpm dev
+```
+
+- Mastra Studio: http://localhost:4111
+- Web app: http://localhost:5173
+
+Or individually:
+
+```bash
+pnpm dev:mastra
+pnpm dev:web
+```
+
+## How reports are stored
+
+Each run of `ossReportWorkflow` is persisted by Mastra in `apps/mastra/mastra.db` (LibSQL). The web app doesn't read any files — it uses [`@mastra/client-js`](https://mastra.ai/docs/server/mastra-client) to query workflow runs directly from the Mastra server.
+
+This means **the Mastra server must be running** for the web app to list or load reports.
+
+The base URL is controlled by `VITE_MASTRA_API_URL` (defaults to `http://localhost:4111`).
+
+## Generate a report
+
+1. Open Mastra Studio.
+2. Run `ossReportWorkflow` with input like:
+   ```json
+   { "start": "2026-04-20T00:00:00.000Z", "end": "2026-04-22T23:59:59.999Z" }
+   ```
+3. All fields are optional:
+   - `start` / `end` — ISO timestamps (defaults to the last 30 days)
+   - `maxIssueAnalyses`, `maxGeneralMessages`, `maxThreadMessages`
+
+Every successful run immediately shows up on the web app's home page.
+
+## Browse reports
+
+Open http://localhost:5173:
+
+- `/` — list of every successful run (newest first)
+- `/reports/:runId` — full report detail
+
+## Build
+
+```bash
+pnpm build          # both apps
+pnpm build:mastra
+pnpm build:web
+```
+
+## Roadmap
+
+- Trigger the workflow from the web app.
+- Schedule weekly runs (GitHub Actions cron or Mastra scheduled workflow).
