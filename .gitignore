@@ -13,3 +13,7 @@ dist
 
 # web app build output
 apps/web/dist
+
+# agent tooling
+.claude/
+skills-lock.json

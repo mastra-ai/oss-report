@@ -54,12 +54,12 @@ function reportToIndexEntry(runId: string, report: Report): ReportIndexEntry {
     repo: report.repo,
     period: report.period,
     summary: {
-      stars: report.summary.stars,
       issuesOpened: report.summary.issuesOpened,
       issuesClosed: report.summary.issuesClosed,
-      npmDownloadsTotal: report.summary.npmDownloads.total,
+      pullRequests: report.summary.pullRequests,
       discordSentiment: report.summary.discordSentiment.overall,
-      issueAnalysisCount: report.issueAnalyses.length,
+      analysisCount: report.summary.analysisCount,
+      bugSeverityCounts: report.summary.bugSeverityCounts,
     },
   };
 }
@@ -82,6 +82,84 @@ export async function fetchReportIndex(): Promise<ReportIndexEntry[]> {
 
   entries.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
   return entries;
+}
+
+export async function startReportRun(params: {
+  start: string;
+  end: string;
+}): Promise<{ runId: string }> {
+  try {
+    const run = await ossReportWorkflow.createRun();
+    await run.start({
+      inputData: { start: params.start, end: params.end },
+      initialState: {},
+    });
+    return { runId: run.runId };
+  } catch (err) {
+    wrapError(err, 'Failed to start workflow run');
+  }
+}
+
+export type RunStatus =
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'suspended'
+  | 'waiting'
+  | 'pending'
+  | 'canceled'
+  | 'tripwire'
+  | 'bailed'
+  | 'paused';
+
+export interface ActiveRun {
+  runId: string;
+  status: RunStatus;
+  createdAt: string;
+  period?: { start: string; end: string };
+}
+
+export async function listActiveRuns(): Promise<ActiveRun[]> {
+  let response;
+  try {
+    response = await ossReportWorkflow.runs({ perPage: 20 });
+  } catch (err) {
+    wrapError(err, 'Failed to list workflow runs');
+  }
+
+  const active: ActiveRun[] = [];
+  for (const run of response.runs) {
+    const snapshot = parseSnapshot(run.snapshot);
+    const status = (snapshot?.status ?? 'pending') as RunStatus;
+    if (status === 'success' || status === 'canceled' || status === 'failed') continue;
+
+    const context = snapshot?.context as Record<string, unknown> | undefined;
+    const input = context?.input as Record<string, unknown> | undefined;
+    const period =
+      input && typeof input.start === 'string' && typeof input.end === 'string'
+        ? { start: input.start, end: input.end }
+        : undefined;
+
+    active.push({
+      runId: run.runId,
+      status,
+      createdAt:
+        typeof run.createdAt === 'string'
+          ? run.createdAt
+          : new Date().toISOString(),
+      period,
+    });
+  }
+  return active;
+}
+
+export async function getRunStatus(runId: string): Promise<RunStatus> {
+  try {
+    const state = await ossReportWorkflow.runById(runId, { fields: [] });
+    return state.status as RunStatus;
+  } catch (err) {
+    wrapError(err, `Failed to load run ${runId}`);
+  }
 }
 
 export async function fetchReport(runId: string): Promise<Report> {

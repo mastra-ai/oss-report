@@ -1,100 +1,123 @@
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { UrgencyBadge } from '@/components/UrgencyBadge';
-import type { IssueAnalysis } from '@/types/report';
-import { ExternalLink, MessagesSquare } from 'lucide-react';
+import { SeverityBadge } from '@/components/SeverityBadge';
+import { TypeBadge } from '@/components/TypeBadge';
+import type { ClosureReason, IssueAnalysis } from '@/types/report';
+import { formatDate } from '@/lib/utils';
+
+const CLOSURE_LABEL: Record<ClosureReason, string> = {
+  fixed: 'fixed',
+  wontfix: "won't fix",
+  duplicate: 'duplicate',
+  stale: 'stale',
+  unknown: 'closed',
+};
+
+const CLOSURE_CLASSES: Record<ClosureReason, string> = {
+  fixed: 'border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400',
+  wontfix: 'border-border bg-muted text-muted-foreground',
+  duplicate: 'border-border bg-muted text-muted-foreground',
+  stale: 'border-border bg-muted text-muted-foreground',
+  unknown: 'border-border bg-muted text-muted-foreground',
+};
+
+const CLOSURE_DOT: Record<ClosureReason, string> = {
+  fixed: 'bg-emerald-500',
+  wontfix: 'bg-muted-foreground/50',
+  duplicate: 'bg-muted-foreground/50',
+  stale: 'bg-muted-foreground/50',
+  unknown: 'bg-muted-foreground/50',
+};
+
+function StatePill({ issue }: { issue: IssueAnalysis }) {
+  if (issue.issueState === 'open') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/5 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+        <span className="h-1 w-1 rounded-full bg-emerald-500" />
+        open
+      </span>
+    );
+  }
+
+  const reason = issue.closureReason ?? 'unknown';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${CLOSURE_CLASSES[reason]}`}
+    >
+      <span className={`h-1 w-1 rounded-full ${CLOSURE_DOT[reason]}`} />
+      {CLOSURE_LABEL[reason]}
+    </span>
+  );
+}
 
 export function IssueCard({ issue }: { issue: IssueAnalysis }) {
+  const isBug = issue.type === 'Bug';
+  const closedInWindow = issue.lifecycle === 'closed' || issue.lifecycle === 'opened-and-closed';
+
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-              <span className="text-muted-foreground">#{issue.issueNumber}</span>
-              <span className="truncate">{issue.issueTitle}</span>
-            </CardTitle>
-            <CardDescription className="mt-2 flex flex-wrap items-center gap-2">
-              <a
-                href={issue.issueUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                GitHub <ExternalLink className="h-3 w-3" />
-              </a>
-              <a
-                href={issue.threadUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                Discord thread <ExternalLink className="h-3 w-3" />
-              </a>
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <MessagesSquare className="h-3 w-3" />
-                {issue.threadMessageCount} msgs
-              </span>
-            </CardDescription>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <UrgencyBadge urgency={issue.urgency} />
-            <Badge variant="outline" className="capitalize">
-              {issue.state}
-            </Badge>
-          </div>
+    <article className="p-5">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <a
+          href={issue.issueUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mono text-xs text-muted-foreground hover:text-foreground"
+        >
+          #{issue.issueNumber}
+        </a>
+        <a
+          href={issue.issueUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="min-w-0 flex-1 text-sm font-medium leading-snug hover:underline"
+        >
+          {issue.issueTitle}
+        </a>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <TypeBadge type={issue.type} />
+          {isBug && (
+            <SeverityBadge severity={issue.severity} />
+          )}
+          <StatePill issue={issue} />
         </div>
-        {issue.labels.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {issue.labels.map(label => (
-              <Badge key={label} variant="secondary" className="text-[10px]">
-                {label}
-              </Badge>
-            ))}
-          </div>
+      </div>
+
+      <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+        {issue.summary}
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {issue.authorLogin && <span>@{issue.authorLogin}</span>}
+        <span>{formatDate(issue.createdAt)}</span>
+        {closedInWindow && issue.closedAt && (
+          <span>
+            closed {formatDate(issue.closedAt)}
+          </span>
         )}
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Status
-          </div>
-          <div className="mt-1 text-sm">{issue.status}</div>
-        </div>
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Summary
-          </div>
-          <p className="mt-1 text-sm leading-relaxed">{issue.summary}</p>
-        </div>
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Recommended action
-          </div>
-          <p className="mt-1 text-sm leading-relaxed">{issue.recommendedAction}</p>
-        </div>
-        {issue.blockers.length > 0 && (
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Blockers
-            </div>
-            <ul className="mt-1 space-y-1 text-sm">
-              {issue.blockers.map((b, i) => (
-                <li key={i} className="flex gap-2">
-                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400" />
-                  <span>{b}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+        <span>
+          <span className="mono tabular-nums text-foreground">{issue.commentCount}</span>{' '}
+          comments
+        </span>
+        {issue.threadMessageCount > 0 && (
+          <span>
+            <span className="mono tabular-nums text-foreground">
+              {issue.threadMessageCount}
+            </span>{' '}
+            discord msgs
+          </span>
         )}
-      </CardContent>
-    </Card>
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] capitalize">
+          {issue.category}
+        </span>
+        {issue.threadUrl && (
+          <a
+            href={issue.threadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-foreground hover:underline"
+          >
+            discord thread →
+          </a>
+        )}
+      </div>
+    </article>
   );
 }

@@ -38,6 +38,45 @@ export function hasDiscordLabel(labels: Array<string | { name?: string | null }>
   });
 }
 
+export interface IssueComment {
+  author: string;
+  createdAt: string;
+  body: string;
+}
+
+export async function fetchIssueComments(
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  limit = 30,
+  options: { tail?: boolean } = {},
+): Promise<IssueComment[]> {
+  const github = getGithubClient();
+  const response = await github.rest.issues.listComments({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    per_page: 100,
+    ...(options.tail ? { sort: 'created', direction: 'desc' } : {}),
+  });
+
+  const comments = response.data.slice(0, limit).map(comment => ({
+    author: comment.user?.login ?? 'unknown',
+    createdAt: comment.created_at,
+    body: (comment.body ?? '').slice(0, 2000),
+  }));
+
+  // If we fetched tail (desc), restore chronological order for the reader.
+  return options.tail ? comments.reverse() : comments;
+}
+
+export function buildDiscordThreadUrl(threadId: string): string {
+  const guildId = process.env.DISCORD_GUILD_ID;
+  return guildId
+    ? `https://discord.com/channels/${guildId}/${threadId}`
+    : `https://discord.com/channels/@me/${threadId}`;
+}
+
 export function extractDiscordThreadId(issueBody: string | null | undefined): string | null {
   if (!issueBody) {
     return null;

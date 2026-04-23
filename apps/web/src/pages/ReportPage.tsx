@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { fetchReport } from '@/lib/api';
-import type { IssueAnalysis, Report, Urgency } from '@/types/report';
+import type { IssueAnalysis, IssueType, Report } from '@/types/report';
 import { SummaryCards } from '@/components/SummaryCards';
 import { SentimentCard } from '@/components/SentimentCard';
+import { AnalysisStats } from '@/components/AnalysisStats';
+import { CategoryTable } from '@/components/CategoryTable';
 import { IssueCard } from '@/components/IssueCard';
-import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Separator } from '@/components/ui/separator';
-import { Card, CardContent } from '@/components/ui/card';
-import { formatDate, formatDateTime } from '@/lib/utils';
-import { ArrowLeft } from 'lucide-react';
+import { ResolutionStats } from '@/components/ResolutionStats';
+import { formatDateTime, formatDateUTC } from '@/lib/utils';
 
-const URGENCY_ORDER: Record<Urgency, number> = { high: 0, medium: 1, low: 2 };
+type Filter = 'all' | IssueType | 'closed';
 
-type Filter = 'all' | Urgency;
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'Bug', label: 'Bugs' },
+  { key: 'Feature Request', label: 'Features' },
+  { key: 'Question', label: 'Questions' },
+  { key: 'closed', label: 'Closed' },
+];
 
 export function ReportPage() {
   const { id } = useParams<{ id: string }>();
@@ -41,101 +45,115 @@ export function ReportPage() {
 
   const sortedIssues = useMemo<IssueAnalysis[]>(() => {
     if (!report) return [];
-    const items = [...report.issueAnalyses];
-    items.sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency]);
-    return filter === 'all' ? items : items.filter(i => i.urgency === filter);
+    const severityRank = { CRITICAL: 3, MAJOR: 2, MINOR: 1 } as const;
+    const items = [...report.issueAnalyses].sort((a, b) => {
+      if (a.type === 'Bug' && b.type !== 'Bug') return -1;
+      if (a.type !== 'Bug' && b.type === 'Bug') return 1;
+      return severityRank[b.severity] - severityRank[a.severity];
+    });
+    if (filter === 'all') return items;
+    if (filter === 'closed') {
+      return items.filter(
+        i => i.lifecycle === 'closed' || i.lifecycle === 'opened-and-closed',
+      );
+    }
+    return items.filter(i => i.type === filter);
   }, [report, filter]);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link to="/">
-            <ArrowLeft className="mr-1 h-4 w-4" />
-            All reports
-          </Link>
-        </Button>
-      </div>
+    <div className="space-y-8">
+      <Link
+        to="/"
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        ← All reports
+      </Link>
 
       {error && (
-        <Card>
-          <CardContent className="py-8 text-center text-sm text-destructive">
-            {error}
-          </CardContent>
-        </Card>
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4">
+          <p className="text-sm text-destructive">{error}</p>
+        </div>
       )}
 
       {!report && !error && (
-        <div className="space-y-4">
-          <Skeleton className="h-20 w-full" />
-          <div className="grid gap-4 md:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-28 w-full" />
-            ))}
-          </div>
-          <Skeleton className="h-64 w-full" />
+        <div className="space-y-6">
+          <div className="h-16 animate-pulse rounded bg-muted" />
+          <div className="h-28 animate-pulse rounded bg-muted" />
+          <div className="h-56 animate-pulse rounded bg-muted" />
         </div>
       )}
 
       {report && (
         <>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              {formatDate(report.period.start)} → {formatDate(report.period.end)}
-            </h1>
-            <p className="text-sm text-muted-foreground">
+          <section>
+            <div className="text-xs font-medium text-muted-foreground">
               {report.repo.owner}/{report.repo.name} · generated{' '}
               {formatDateTime(report.generatedAt)}
-            </p>
-          </div>
+            </div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight">
+              {formatDateUTC(report.period.start)}
+              <span className="mx-2 text-muted-foreground">→</span>
+              {formatDateUTC(report.period.end)}
+            </h1>
+          </section>
 
           <SummaryCards report={report} />
 
+          <div className="grid gap-6 lg:grid-cols-2">
+            <AnalysisStats summary={report.summary} />
+            <CategoryTable categories={report.summary.categoryBreakdown} />
+          </div>
+
+          <ResolutionStats
+            resolutionCounts={report.summary.resolutionCounts}
+            closedInWindowCount={report.summary.closedInWindowCount}
+          />
+
           <SentimentCard sentiment={report.summary.discordSentiment} />
 
-          <Separator />
-
-          <div>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <section>
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h2 className="text-xl font-semibold tracking-tight">
-                  Issue thread analyses
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  {report.issueAnalyses.length} issue
-                  {report.issueAnalyses.length === 1 ? '' : 's'} with linked
-                  Discord threads.
+                <h2 className="text-lg font-semibold tracking-tight">Issues</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {report.issueAnalyses.length} analyzed
                 </p>
               </div>
-              <div className="flex gap-1">
-                {(['all', 'high', 'medium', 'low'] as const).map(f => (
-                  <Button
-                    key={f}
-                    variant={filter === f ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setFilter(f)}
-                    className="capitalize"
+              <div
+                role="tablist"
+                className="inline-flex rounded-md border p-0.5"
+              >
+                {FILTERS.map(f => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={filter === f.key}
+                    onClick={() => setFilter(f.key)}
+                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                      filter === f.key
+                        ? 'bg-foreground text-background'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
                   >
-                    {f}
-                  </Button>
+                    {f.label}
+                  </button>
                 ))}
               </div>
             </div>
 
             {sortedIssues.length === 0 ? (
-              <Card>
-                <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                  No issues match this filter.
-                </CardContent>
-              </Card>
+              <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">
+                Nothing matches this filter.
+              </div>
             ) : (
-              <div className="grid gap-4">
+              <div className="divide-y rounded-md border">
                 {sortedIssues.map(issue => (
                   <IssueCard key={issue.issueNumber} issue={issue} />
                 ))}
               </div>
             )}
-          </div>
+          </section>
         </>
       )}
     </div>

@@ -1,66 +1,51 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatNumber } from '@/lib/utils';
 import type { Report } from '@/types/report';
-import { Download, GitPullRequest, Star, TriangleAlert } from 'lucide-react';
 
 export function SummaryCards({ report }: { report: Report }) {
   const { summary } = report;
+
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-      <MetricCard
-        title="GitHub stars"
-        value={formatNumber(summary.stars)}
-        icon={<Star className="h-4 w-4 text-amber-400" />}
+    <div className="grid grid-cols-2 gap-px rounded-md border bg-border overflow-hidden lg:grid-cols-4">
+      <Metric
+        label="Open backlog"
+        value={summary.openBacklog}
+        caption="all open issues"
       />
-      <MetricCard
-        title="Issues opened"
-        value={formatNumber(summary.issuesOpened.total)}
-        sub={`${summary.issuesOpened.discord} discord · ${summary.issuesOpened.rest} rest`}
-        icon={<TriangleAlert className="h-4 w-4 text-sky-400" />}
+      <Metric
+        label="Issues opened"
+        value={summary.issuesOpened.total}
+        caption={`${summary.issuesOpened.discord} discord · ${summary.issuesOpened.github} direct`}
       />
-      <MetricCard
-        title="Issues closed"
-        value={formatNumber(summary.issuesClosed.total)}
-        sub={`${summary.issuesClosed.discord} discord · ${summary.issuesClosed.rest} rest`}
-        icon={<GitPullRequest className="h-4 w-4 text-emerald-400" />}
+      <Metric
+        label="Issues closed"
+        value={summary.issuesClosed.total}
+        caption={`${summary.issuesClosed.discord} discord · ${summary.issuesClosed.github} direct`}
       />
-      <MetricCard
-        title="npm downloads"
-        value={formatNumber(summary.npmDownloads.total)}
-        sub={summary.npmDownloads.packages
-          .map(p => `${p.packageName}: ${formatNumber(p.downloads)}`)
-          .join(' · ')}
-        icon={<Download className="h-4 w-4 text-violet-400" />}
+      <Metric
+        label="PRs merged"
+        value={summary.pullRequests.merged}
+        caption={`${formatNumber(summary.pullRequests.opened)} opened this window`}
       />
     </div>
   );
 }
 
-function MetricCard({
-  title,
+function Metric({
+  label,
   value,
-  sub,
-  icon,
+  caption,
 }: {
-  title: string;
-  value: string;
-  sub?: string;
-  icon: React.ReactNode;
+  label: string;
+  value: number;
+  caption: string;
 }) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {title}
-        </CardTitle>
-        {icon}
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold tabular-nums">{value}</div>
-        {sub && (
-          <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
-        )}
-      </CardContent>
-    </Card>
+    <div className="bg-background p-5">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="mono mt-2 text-3xl font-semibold tabular-nums tracking-tight">
+        {formatNumber(value)}
+      </div>
+      <div className="mt-1.5 text-xs text-muted-foreground">{caption}</div>
+    </div>
   );
 }

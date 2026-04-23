@@ -47,15 +47,3 @@ export function sentimentVariant(
   }
 }
 
-export function urgencyVariant(
-  urgency: 'low' | 'medium' | 'high',
-): 'success' | 'warning' | 'destructive' {
-  switch (urgency) {
-    case 'high':
-      return 'destructive';
-    case 'medium':
-      return 'warning';
-    default:
-      return 'success';
-  }
-}

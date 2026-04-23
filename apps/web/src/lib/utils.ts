@@ -18,6 +18,17 @@ export function formatDate(iso: string): string {
   });
 }
 
+/** Format a UTC date ignoring local timezone. Use for period boundaries. */
+export function formatDateUTC(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
 export function formatDateTime(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString(undefined, {

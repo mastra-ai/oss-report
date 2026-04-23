@@ -1,16 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { fetchReportIndex } from '@/lib/api';
 import type { ReportIndexEntry } from '@/types/report';
 import { ReportListItem } from '@/components/ReportListItem';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Card, CardContent } from '@/components/ui/card';
-import { FileX } from 'lucide-react';
+import { GenerateReport } from '@/components/GenerateReport';
 
 export function HomePage() {
   const [entries, setEntries] = useState<ReportIndexEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     let cancelled = false;
     fetchReportIndex()
       .then(data => {
@@ -24,46 +22,49 @@ export function HomePage() {
     };
   }, []);
 
+  useEffect(() => {
+    return load();
+  }, [load]);
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
-        <p className="text-sm text-muted-foreground">
-          Weekly OSS health reports for mastra-ai/mastra.
+    <div className="space-y-8">
+      <section>
+        <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Weekly activity across mastra-ai/mastra.
         </p>
-      </div>
+      </section>
+
+      <GenerateReport onComplete={load} />
 
       {error && (
-        <Card>
-          <CardContent className="py-8 text-center text-sm text-destructive">
-            {error}
-          </CardContent>
-        </Card>
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4">
+          <p className="text-sm text-destructive">{error}</p>
+        </div>
       )}
 
       {entries === null && !error && (
-        <div className="grid gap-4">
+        <div className="divide-y divide-border rounded-md border">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-40 w-full" />
+            <div key={i} className="animate-pulse p-5">
+              <div className="h-4 w-48 bg-muted" />
+              <div className="mt-3 h-3 w-64 bg-muted" />
+            </div>
           ))}
         </div>
       )}
 
       {entries !== null && entries.length === 0 && (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
-            <FileX className="h-8 w-8 text-muted-foreground" />
-            <div className="text-sm font-medium">No successful runs yet</div>
-            <div className="max-w-md text-xs text-muted-foreground">
-              Run the <code className="rounded bg-muted px-1 py-0.5">ossReportWorkflow</code> in
-              Mastra Studio to generate your first report.
-            </div>
-          </CardContent>
-        </Card>
+        <div className="rounded-md border border-dashed p-10 text-center">
+          <p className="text-sm font-medium">No reports yet.</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            Generate one above — it'll appear here when it finishes.
+          </p>
+        </div>
       )}
 
       {entries && entries.length > 0 && (
-        <div className="grid gap-4">
+        <div className="divide-y divide-border rounded-md border">
           {entries.map(entry => (
             <ReportListItem key={entry.id} entry={entry} />
           ))}
