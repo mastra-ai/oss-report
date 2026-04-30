@@ -8,6 +8,7 @@ import { AnalysisStats } from '@/components/AnalysisStats';
 import { CategoryTable } from '@/components/CategoryTable';
 import { IssueCard } from '@/components/IssueCard';
 import { ResolutionStats } from '@/components/ResolutionStats';
+import { KeyTakeaways } from '@/components/KeyTakeaways';
 import { formatDateTime, formatDateUTC } from '@/lib/utils';
 
 type Filter = 'all' | IssueType | 'closed';
@@ -87,8 +88,7 @@ export function ReportPage() {
         <>
           <section>
             <div className="text-xs font-medium text-muted-foreground">
-              {report.repo.owner}/{report.repo.name} · generated{' '}
-              {formatDateTime(report.generatedAt)}
+              {report.repo.owner}/{report.repo.name} · generated {formatDateTime(report.generatedAt)}
             </div>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">
               {formatDateUTC(report.period.start)}
@@ -97,9 +97,11 @@ export function ReportPage() {
             </h1>
           </section>
 
+          <KeyTakeaways takeaways={report.takeaways} comparison={report.comparison} />
+
           <SummaryCards report={report} />
 
-          <div className="grid gap-6 lg:grid-cols-2">
+          <div className="grid gap-6 xl:grid-cols-2">
             <AnalysisStats summary={report.summary} />
             <CategoryTable categories={report.summary.categoryBreakdown} />
           </div>
@@ -116,13 +118,10 @@ export function ReportPage() {
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">Issues</h2>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {report.issueAnalyses.length} analyzed
+                  {report.issueAnalyses.length} analyzed · AI triaged from GitHub and linked Discord context
                 </p>
               </div>
-              <div
-                role="tablist"
-                className="inline-flex rounded-md border p-0.5"
-              >
+              <div role="tablist" className="inline-flex rounded-md border p-0.5">
                 {FILTERS.map(f => (
                   <button
                     key={f.key}

@@ -1,4 +1,4 @@
-import { ChannelType, Client, GatewayIntentBits, Message, ThreadChannel } from 'discord.js';
+import { ChannelType, Client, GatewayIntentBits, Message, SnowflakeUtil, ThreadChannel, type Collection } from 'discord.js';
 
 let discordClientPromise: Promise<Client> | null = null;
 
@@ -52,7 +52,7 @@ export async function getDiscordClient() {
   return discordClientPromise;
 }
 
-export async function fetchMessagesSince(channelId: string, since: Date, limit = 250) {
+export async function fetchMessagesInWindow(channelId: string, since: Date, until: Date, limit = 250) {
   const client = await getDiscordClient();
   const channel = await client.channels.fetch(channelId);
 
@@ -61,10 +61,10 @@ export async function fetchMessagesSince(channelId: string, since: Date, limit =
   }
 
   const collected: Message[] = [];
-  let before: string | undefined;
+  let before: string | undefined = SnowflakeUtil.generate({ timestamp: until }).toString();
 
   while (collected.length < limit) {
-    const batch = await channel.messages.fetch({
+    const batch: Collection<string, Message> = await channel.messages.fetch({
       limit: Math.min(100, limit - collected.length),
       before,
     });
@@ -80,7 +80,7 @@ export async function fetchMessagesSince(channelId: string, since: Date, limit =
         return collected;
       }
 
-      if (!message.author.bot && message.content.trim()) {
+      if (message.createdAt < until && !message.author.bot && message.content.trim()) {
         collected.push(message);
       }
     }

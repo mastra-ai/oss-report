@@ -54,9 +54,57 @@ export interface CategoryBreakdown {
   Question: number;
 }
 
+export interface CategoryShift {
+  category: string;
+  delta: number;
+}
+
 export interface IssueStatusCounts {
   open: number;
   closed: number;
+}
+
+export interface Comparison {
+  backlogDelta: number | null;
+  issuesOpenedDelta: number | null;
+  issuesClosedDelta: number | null;
+  mergedPrDelta: number | null;
+  analysisCountDelta: number | null;
+  criticalBugDelta: number | null;
+  majorBugDelta: number | null;
+  topCategoryShifts: CategoryShift[];
+  sentimentChanged: boolean | null;
+  sentimentDeltaSummary: string | null;
+}
+
+export interface Takeaways {
+  improved: string[];
+  regressed: string[];
+  watch: string[];
+}
+
+export interface ReportActions {
+  priorityIssues: number[];
+  recommendedActions: string[];
+  needsDocsAttention: string[];
+  recurringPainAreas: string[];
+}
+
+export interface BacklogHealth {
+  analyzedOpenBugCount: number;
+  analyzedOpenQuestionCount: number;
+  analyzedOpenFeatureRequestCount: number;
+  analyzedOpenCriticalCount: number;
+  analyzedOpenMajorCount: number;
+  staleOpenCount: number;
+}
+
+export interface OperationalHealth {
+  medianTimeToCloseDays: number | null;
+  closedWithin7Days: number;
+  closedWithin30Days: number;
+  oldestOpenCriticalAgeDays: number | null;
+  oldestOpenMajorAgeDays: number | null;
 }
 
 export type PainSeverity = 'blocker' | 'friction' | 'nit';
@@ -155,6 +203,8 @@ export interface ReportSummary {
   resolutionCounts: ResolutionCounts;
   closedInWindowCount: number;
   categoryBreakdown: CategoryBreakdown[];
+  backlogHealth: BacklogHealth;
+  operationalHealth: OperationalHealth;
   discordSentiment: DiscordSentiment;
 }
 
@@ -162,6 +212,9 @@ export interface Report {
   generatedAt: string;
   repo: ReportRepo;
   period: ReportPeriod;
+  comparison: Comparison;
+  takeaways: Takeaways;
+  actions: ReportActions;
   summary: ReportSummary;
   issueAnalyses: IssueAnalysis[];
 }
@@ -171,6 +224,8 @@ export interface ReportIndexEntry {
   generatedAt: string;
   repo: ReportRepo;
   period: ReportPeriod;
+  comparison: Comparison;
+  takeaways: Takeaways;
   summary: {
     issuesOpened: IssueCounts;
     issuesClosed: IssueCounts;

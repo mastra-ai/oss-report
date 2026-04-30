@@ -53,6 +53,8 @@ function reportToIndexEntry(runId: string, report: Report): ReportIndexEntry {
     generatedAt: report.generatedAt,
     repo: report.repo,
     period: report.period,
+    comparison: report.comparison,
+    takeaways: report.takeaways,
     summary: {
       issuesOpened: report.summary.issuesOpened,
       issuesClosed: report.summary.issuesClosed,

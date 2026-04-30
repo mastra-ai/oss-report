@@ -73,39 +73,30 @@ export function IssueCard({ issue }: { issue: IssueAnalysis }) {
         </a>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           <TypeBadge type={issue.type} />
-          {isBug && (
-            <SeverityBadge severity={issue.severity} />
-          )}
+          {isBug && <SeverityBadge severity={issue.severity} />}
           <StatePill issue={issue} />
         </div>
       </div>
 
-      <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
-        {issue.summary}
-      </p>
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{issue.summary}</p>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {issue.authorLogin && <span>@{issue.authorLogin}</span>}
         <span>{formatDate(issue.createdAt)}</span>
-        {closedInWindow && issue.closedAt && (
-          <span>
-            closed {formatDate(issue.closedAt)}
-          </span>
-        )}
+        {closedInWindow && issue.closedAt && <span>closed {formatDate(issue.closedAt)}</span>}
         <span>
-          <span className="mono tabular-nums text-foreground">{issue.commentCount}</span>{' '}
-          comments
+          <span className="mono tabular-nums text-foreground">{issue.commentCount}</span> comments
         </span>
         {issue.threadMessageCount > 0 && (
           <span>
-            <span className="mono tabular-nums text-foreground">
-              {issue.threadMessageCount}
-            </span>{' '}
+            <span className="mono tabular-nums text-foreground">{issue.threadMessageCount}</span>{' '}
             discord msgs
           </span>
         )}
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] capitalize">
-          {issue.category}
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] capitalize">{issue.category}</span>
+        <span className="rounded border border-border px-1.5 py-0.5 text-[11px]">AI triaged</span>
+        <span className="rounded border border-border px-1.5 py-0.5 text-[11px]">
+          {issue.source === 'discord-thread' ? 'Discord + GitHub' : 'GitHub only'}
         </span>
         {issue.threadUrl && (
           <a

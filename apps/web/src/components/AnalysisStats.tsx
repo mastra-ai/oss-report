@@ -1,7 +1,7 @@
 import type { ReportSummary } from '@/types/report';
 
 export function AnalysisStats({ summary }: { summary: ReportSummary }) {
-  const { typeCounts, bugSeverityCounts, issueStatusCounts } = summary;
+  const { typeCounts, bugSeverityCounts } = summary;
   const total = summary.analysisCount;
   const totalBugs =
     bugSeverityCounts.CRITICAL + bugSeverityCounts.MAJOR + bugSeverityCounts.MINOR;
@@ -19,9 +19,12 @@ export function AnalysisStats({ summary }: { summary: ReportSummary }) {
       {/* Composition */}
       <div className="p-5">
         <div className="flex items-baseline justify-between">
-          <h3 className="text-sm font-semibold">Composition</h3>
-          <span className="mono text-xs text-muted-foreground">{total} analyzed</span>
+          <h3 className="text-sm font-semibold">Issue types</h3>
+          <span className="mono text-xs text-muted-foreground">{total} reviewed</span>
         </div>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          Unique issues from this report window.
+        </p>
 
         <div className="mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted">
           {bugPct > 0 && (
@@ -56,27 +59,13 @@ export function AnalysisStats({ summary }: { summary: ReportSummary }) {
           />
         </div>
 
-        <div className="mt-5 flex items-center gap-8 border-t pt-4 text-sm">
-          <div className="flex items-baseline gap-2">
-            <span className="text-xs text-muted-foreground">Open</span>
-            <span className="mono font-semibold tabular-nums">
-              {issueStatusCounts.open}
-            </span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-xs text-muted-foreground">Closed</span>
-            <span className="mono font-semibold tabular-nums">
-              {issueStatusCounts.closed}
-            </span>
-          </div>
-        </div>
       </div>
 
       {/* Severity */}
       <div className="p-5">
         <div className="flex items-baseline justify-between">
           <h3 className="text-sm font-semibold">Bug severity</h3>
-          <span className="mono text-xs text-muted-foreground">{totalBugs} bugs</span>
+          <span className="mono text-xs text-muted-foreground">{totalBugs} classified bugs</span>
         </div>
 
         {totalBugs === 0 ? (

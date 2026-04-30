@@ -22,21 +22,21 @@ export const mastra = new Mastra({
       id: 'mastra-storage',
       url: 'file:./mastra.db',
     }),
-    domains: {
-      observability: await new DuckDBStore().getStore('observability'),
-    },
+    // domains: {
+    //   observability: await new DuckDBStore().getStore('observability'),
+    // },
   }),
   logger: new PinoLogger({
     name: 'Mastra',
     level: 'info',
   }),
-  observability: new Observability({
-    configs: {
-      default: {
-        serviceName: 'mastra',
-        exporters: [new DefaultExporter(), new CloudExporter()],
-        spanOutputProcessors: [new SensitiveDataFilter()],
-      },
-    },
-  }),
+  // observability: new Observability({
+  //   configs: {
+  //     default: {
+  //       serviceName: 'mastra',
+  //       exporters: [new DefaultExporter(), new CloudExporter()],
+  //       spanOutputProcessors: [new SensitiveDataFilter()],
+  //     },
+  //   },
+  // }),
 });

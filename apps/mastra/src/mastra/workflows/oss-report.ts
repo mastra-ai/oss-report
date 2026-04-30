@@ -2,7 +2,7 @@ import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { z } from 'zod';
 import { discordSentimentAgent } from '../agents/discord-sentiment';
 import { issueThreadAnalysisAgent } from '../agents/issue-thread-analysis';
-import { fetchMessagesSince, fetchThreadMessages, getChannelName } from '../shared/discord';
+import { fetchMessagesInWindow, fetchThreadMessages, getChannelName } from '../shared/discord';
 import {
   extractDiscordThreadId,
   fetchIssueComments,
@@ -49,9 +49,57 @@ const categoryBreakdownSchema = z.object({
   Question: z.number(),
 });
 
+const categoryShiftSchema = z.object({
+  category: z.string(),
+  delta: z.number(),
+});
+
 const issueStatusCountsSchema = z.object({
   open: z.number(),
   closed: z.number(),
+});
+
+const comparisonSchema = z.object({
+  backlogDelta: z.number().nullable(),
+  issuesOpenedDelta: z.number().nullable(),
+  issuesClosedDelta: z.number().nullable(),
+  mergedPrDelta: z.number().nullable(),
+  analysisCountDelta: z.number().nullable(),
+  criticalBugDelta: z.number().nullable(),
+  majorBugDelta: z.number().nullable(),
+  topCategoryShifts: z.array(categoryShiftSchema),
+  sentimentChanged: z.boolean().nullable(),
+  sentimentDeltaSummary: z.string().nullable(),
+});
+
+const takeawaysSchema = z.object({
+  improved: z.array(z.string()),
+  regressed: z.array(z.string()),
+  watch: z.array(z.string()),
+});
+
+const actionsSchema = z.object({
+  priorityIssues: z.array(z.number()),
+  recommendedActions: z.array(z.string()),
+  needsDocsAttention: z.array(z.string()),
+  recurringPainAreas: z.array(z.string()),
+});
+
+const backlogHealthSchema = z.object({
+  analyzedOpenBugCount: z.number(),
+  analyzedOpenQuestionCount: z.number(),
+  analyzedOpenFeatureRequestCount: z.number(),
+  analyzedOpenCriticalCount: z.number(),
+  analyzedOpenMajorCount: z.number(),
+  staleOpenCount: z.number(),
+});
+
+const operationalHealthSchema = z.object({
+  medianTimeToCloseDays: z.number().nullable(),
+  closedWithin7Days: z.number(),
+  closedWithin30Days: z.number(),
+  oldestOpenCriticalAgeDays: z.number().nullable(),
+  oldestOpenMajorAgeDays: z.number().nullable(),
 });
 
 const workflowInputSchema = z.object({
@@ -151,6 +199,8 @@ const reportSummarySchema = z.object({
   resolutionCounts: resolutionCountsSchema,
   closedInWindowCount: z.number(),
   categoryBreakdown: z.array(categoryBreakdownSchema),
+  backlogHealth: backlogHealthSchema,
+  operationalHealth: operationalHealthSchema,
   discordSentiment: discordSentimentSchema,
 });
 
@@ -165,6 +215,9 @@ const reportSchema = z.object({
     end: z.string(),
     label: z.string(),
   }),
+  comparison: comparisonSchema,
+  takeaways: takeawaysSchema,
+  actions: actionsSchema,
   summary: reportSummarySchema,
   issueAnalyses: z.array(issueAnalysisSchema),
 });
@@ -281,16 +334,31 @@ function requireReportState(state: z.infer<typeof reportStateSchema>) {
 }
 
 function isIssueAnalysis(
-  issueAnalysis: z.infer<typeof issueAnalysisSchema> | null,
+  issueAnalysis: z.infer<typeof issueAnalysisSchema> | null | undefined,
 ): issueAnalysis is z.infer<typeof issueAnalysisSchema> {
-  return issueAnalysis !== null;
+  return issueAnalysis != null;
 }
 
-async function loadPreviousSentimentContext(
+function parseRunSnapshot(snapshot: unknown): Record<string, unknown> | null {
+  if (!snapshot) return null;
+  if (typeof snapshot === 'string') {
+    try {
+      return JSON.parse(snapshot) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof snapshot === 'object') {
+    return snapshot as Record<string, unknown>;
+  }
+  return null;
+}
+
+async function loadPreviousReport(
   mastra: { getWorkflow?: (id: string) => unknown } | undefined,
-  currentWindowStart: Date,
+  currentPeriod: { start: Date; end: Date },
   logger?: { info?: (message: string) => void; warn?: (message: string) => void },
-): Promise<{ period: string; text: string } | null> {
+): Promise<z.infer<typeof reportSchema> | null> {
   try {
     const workflow = mastra?.getWorkflow?.('ossReportWorkflow') as
       | { listWorkflowRuns?: (args: unknown) => Promise<{ runs: Array<{ snapshot?: unknown; createdAt?: string }> }> }
@@ -299,40 +367,218 @@ async function loadPreviousSentimentContext(
 
     const { runs } = await workflow.listWorkflowRuns({
       status: 'success',
-      perPage: 10,
+      perPage: 50,
       page: 0,
     });
 
-    for (const run of runs ?? []) {
-      const result = (run.snapshot as { result?: unknown })?.result as
-        | z.infer<typeof reportSchema>
-        | undefined;
-      if (!result?.period?.end || !result.summary?.discordSentiment) continue;
+    const candidates = (runs ?? [])
+      .map(run => {
+        const snapshot = parseRunSnapshot(run.snapshot);
+        return snapshot?.result as z.infer<typeof reportSchema> | undefined;
+      })
+      .filter((result): result is z.infer<typeof reportSchema> => {
+        if (!result?.period?.start || !result.period.end || !result.summary?.discordSentiment) return false;
 
-      const prevEnd = new Date(result.period.end);
-      if (prevEnd >= currentWindowStart) continue;
+        const previousStart = new Date(result.period.start).getTime();
+        const previousEnd = new Date(result.period.end).getTime();
+        const currentStart = currentPeriod.start.getTime();
+        const currentEnd = currentPeriod.end.getTime();
 
-      const s = result.summary.discordSentiment;
-      const aspectLine = s.aspects
-        ?.map(a => `${a.aspect} (${a.sentiment})`)
-        .join(', ');
+        if (Number.isNaN(previousStart) || Number.isNaN(previousEnd)) return false;
+        if (previousStart === currentStart && previousEnd === currentEnd) return false;
 
-      const text = [
-        `Overall: ${s.overall}.`,
-        s.summary,
-        aspectLine ? `Aspects discussed: ${aspectLine}.` : null,
-      ]
-        .filter(Boolean)
-        .join(' ');
+        return previousEnd < currentEnd;
+      })
+      .sort((a, b) => new Date(b.period.end).getTime() - new Date(a.period.end).getTime());
 
-      return { period: result.period.label, text };
-    }
-
-    return null;
+    return candidates[0] ?? null;
   } catch (error) {
-    logger?.warn?.(`Failed to load previous sentiment context: ${String(error)}`);
+    logger?.warn?.(`Failed to load previous report context: ${String(error)}`);
     return null;
   }
+}
+
+async function loadPreviousSentimentContext(
+  mastra: { getWorkflow?: (id: string) => unknown } | undefined,
+  currentPeriod: { start: Date; end: Date },
+  logger?: { info?: (message: string) => void; warn?: (message: string) => void },
+): Promise<{ period: string; text: string } | null> {
+  const previousReport = await loadPreviousReport(mastra, currentPeriod, logger);
+  if (!previousReport) return null;
+
+  const s = previousReport.summary.discordSentiment;
+  const aspectLine = s.aspects?.map(a => `${a.aspect} (${a.sentiment})`).join(', ');
+  const text = [
+    `Overall: ${s.overall}.`,
+    s.summary,
+    aspectLine ? `Aspects discussed: ${aspectLine}.` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return { period: previousReport.period.label, text };
+}
+
+function delta(current: number, previous: number): number {
+  return current - previous;
+}
+
+function daysBetween(start: string, end: string): number {
+  return Math.max(0, (new Date(end).getTime() - new Date(start).getTime()) / 86_400_000);
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return Number(sorted[mid].toFixed(1));
+  return Number((((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2).toFixed(1));
+}
+
+function compareCategories(
+  current: z.infer<typeof categoryBreakdownSchema>[],
+  previous: z.infer<typeof categoryBreakdownSchema>[] | undefined,
+) {
+  const previousMap = new Map((previous ?? []).map(category => [category.category, category.total]));
+  return current
+    .map(category => ({
+      category: category.category,
+      delta: category.total - (previousMap.get(category.category) ?? 0),
+    }))
+    .filter(category => category.delta !== 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.category.localeCompare(b.category))
+    .slice(0, 5);
+}
+
+function buildTakeaways(args: {
+  summary: z.infer<typeof reportSummarySchema>;
+  comparison: z.infer<typeof comparisonSchema>;
+}) {
+  const { summary, comparison } = args;
+  const improved: string[] = [];
+  const regressed: string[] = [];
+  const watch: string[] = [];
+
+  if ((comparison.backlogDelta ?? 0) < 0) {
+    improved.push(`Open backlog fell by ${Math.abs(comparison.backlogDelta ?? 0)} issues.`);
+  }
+  if ((comparison.issuesClosedDelta ?? 0) > 0) {
+    improved.push(`Closed throughput improved by ${comparison.issuesClosedDelta} issues.`);
+  }
+  if ((comparison.mergedPrDelta ?? 0) > 0) {
+    improved.push(`Merged PR volume increased by ${comparison.mergedPrDelta}.`);
+  }
+
+  if ((comparison.backlogDelta ?? 0) > 0) {
+    regressed.push(`Open backlog grew by ${comparison.backlogDelta} issues.`);
+  }
+  if ((comparison.criticalBugDelta ?? 0) > 0) {
+    regressed.push(`Critical bugs increased by ${comparison.criticalBugDelta}.`);
+  }
+  if ((comparison.majorBugDelta ?? 0) > 0) {
+    regressed.push(`Major bugs increased by ${comparison.majorBugDelta}.`);
+  }
+  if (summary.discordSentiment.overall === 'negative') {
+    regressed.push('Discord sentiment turned negative in the general channel.');
+  }
+
+  const topShift = comparison.topCategoryShifts[0];
+  if (topShift && topShift.delta >= 5) {
+    watch.push(`${topShift.category} discussion volume rose by ${topShift.delta} issue${topShift.delta === 1 ? '' : 's'}.`);
+  }
+  if (summary.backlogHealth.analyzedOpenCriticalCount > 0) {
+    watch.push(
+      `${summary.backlogHealth.analyzedOpenCriticalCount} analyzed open critical bug${summary.backlogHealth.analyzedOpenCriticalCount === 1 ? '' : 's'} need follow-up.`,
+    );
+  }
+  if (summary.backlogHealth.staleOpenCount > 0) {
+    watch.push(
+      `${summary.backlogHealth.staleOpenCount} analyzed open issue${summary.backlogHealth.staleOpenCount === 1 ? '' : 's'} are older than 30 days.`,
+    );
+  }
+  if (comparison.sentimentDeltaSummary) {
+    watch.push(comparison.sentimentDeltaSummary);
+  }
+
+  if (improved.length === 0) {
+    improved.push('No clear week-over-week improvement signal yet.');
+  }
+  if (regressed.length === 0) {
+    regressed.push('No major regression stood out versus the prior report.');
+  }
+  if (watch.length === 0) {
+    watch.push('No concentrated risk area surfaced beyond normal triage load.');
+  }
+
+  return {
+    improved: improved.slice(0, 3),
+    regressed: regressed.slice(0, 3),
+    watch: watch.slice(0, 3),
+  };
+}
+
+function buildActions(args: {
+  issueAnalyses: z.infer<typeof issueAnalysisSchema>[];
+  summary: z.infer<typeof reportSummarySchema>;
+  comparison: z.infer<typeof comparisonSchema>;
+}) {
+  const { issueAnalyses, summary, comparison } = args;
+  const recurringPainAreas = summary.discordSentiment.aspects
+    .filter(aspect => aspect.painPoints.length > 0)
+    .sort((a, b) => b.painPoints.length - a.painPoints.length)
+    .slice(0, 3)
+    .map(aspect => `${aspect.aspect}: ${aspect.painPoints[0]?.headline ?? 'community friction'}`);
+
+  const docsCandidates = [
+    ...summary.discordSentiment.aspects
+      .filter(aspect => aspect.aspect === 'docs' || aspect.painPoints.some(point => /docs?|guide|example/i.test(`${point.headline} ${point.detail ?? ''}`)))
+      .map(aspect => `${aspect.aspect}: ${aspect.painPoints[0]?.headline ?? 'documentation gap'}`),
+    ...issueAnalyses
+      .filter(issue => issue.type !== 'Bug' && /docs?|guide|example/i.test(`${issue.issueTitle} ${issue.summary}`))
+      .slice(0, 2)
+      .map(issue => `#${issue.issueNumber}: ${issue.issueTitle}`),
+  ];
+
+  const priorityIssues = issueAnalyses
+    .filter(issue => issue.issueState === 'open')
+    .sort((a, b) => {
+      const severityRank = { CRITICAL: 3, MAJOR: 2, MINOR: 1 } as const;
+      const severityDelta = severityRank[b.severity] - severityRank[a.severity];
+      if (severityDelta !== 0) return severityDelta;
+      return b.threadMessageCount - a.threadMessageCount || b.commentCount - a.commentCount;
+    })
+    .slice(0, 5)
+    .map(issue => issue.issueNumber);
+
+  const recommendedActions: string[] = [];
+  if (summary.backlogHealth.analyzedOpenCriticalCount > 0) {
+    recommendedActions.push(
+      `Assign owners for ${summary.backlogHealth.analyzedOpenCriticalCount} analyzed open critical bug${summary.backlogHealth.analyzedOpenCriticalCount === 1 ? '' : 's'} before the next report.`,
+    );
+  }
+  if ((comparison.backlogDelta ?? 0) > 0 && summary.issuesClosed.total < summary.issuesOpened.total) {
+    recommendedActions.push('Spend one triage pass on backlog reduction; intake outpaced closures this window.');
+  }
+  if (comparison.topCategoryShifts[0]?.delta > 0) {
+    recommendedActions.push(
+      `Review ${comparison.topCategoryShifts[0].category} as the fastest-growing issue category this window.`,
+    );
+  }
+  if (summary.discordSentiment.overall === 'negative' || summary.discordSentiment.overall === 'mixed') {
+    recommendedActions.push('Use Discord pain points to drive the next maintainer triage agenda.');
+  }
+  if (summary.operationalHealth.medianTimeToCloseDays && summary.operationalHealth.medianTimeToCloseDays > 14) {
+    recommendedActions.push(
+      `Reduce median time to close from ${summary.operationalHealth.medianTimeToCloseDays} days by clearing easy fixes and duplicates first.`,
+    );
+  }
+
+  return {
+    priorityIssues,
+    recommendedActions: recommendedActions.slice(0, 5),
+    needsDocsAttention: Array.from(new Set(docsCandidates)).slice(0, 3),
+    recurringPainAreas,
+  };
 }
 
 async function searchCount(query: string, logger?: { info?: (message: string) => void }) {
@@ -373,7 +619,7 @@ const resolveReportContextStep = createStep({
       },
       config: {
         generalChannelId: process.env.DISCORD_GENERAL_CHANNEL_ID || null,
-        maxIssueAnalyses: inputData.maxIssueAnalyses ?? 50,
+        maxIssueAnalyses: inputData.maxIssueAnalyses ?? 500,
       },
     };
 
@@ -731,7 +977,7 @@ const reportDraftSchema = z.object({
 
 const collectIssueAnalysesStep = createStep({
   id: 'collect-issue-analyses',
-  inputSchema: z.array(issueAnalysisSchema.nullable()),
+  inputSchema: z.array(issueAnalysisSchema.nullable().optional()),
   outputSchema: reportDraftSchema,
   execute: async ({ inputData }) => ({
     issueAnalyses: inputData.filter(isIssueAnalysis),
@@ -763,9 +1009,10 @@ const analyzeDiscordSentimentStep = createStep({
     if (config.generalChannelId) {
       const windowStart = new Date(period.start);
       const windowEnd = new Date(period.end);
-      const generalMessages = await fetchMessagesSince(
+      const generalMessages = await fetchMessagesInWindow(
         config.generalChannelId,
         windowStart,
+        windowEnd,
         MAX_GENERAL_MESSAGES,
       );
       const channelName = await getChannelName(config.generalChannelId);
@@ -779,7 +1026,11 @@ const analyzeDiscordSentimentStep = createStep({
 
       if (generalMessages.length) {
         // Fetch previous report for week-over-week context.
-        const previousSummary = await loadPreviousSentimentContext(mastra, windowStart, logger);
+        const previousSummary = await loadPreviousSentimentContext(
+          mastra,
+          { start: windowStart, end: windowEnd },
+          logger,
+        );
 
         const previousBlock = previousSummary
           ? `# Previous window summary (${previousSummary.period})\n${previousSummary.text}\n\n`
@@ -916,6 +1167,112 @@ const analyzeDiscordSentimentStep = createStep({
     }
 
     const categoryBreakdown = [...categoryMap.values()].sort((a, b) => b.total - a.total);
+    const analyzedOpenIssues = issueAnalyses.filter(issue => issue.issueState === 'open');
+    const analyzedOpenBugCount = analyzedOpenIssues.filter(issue => issue.type === 'Bug').length;
+    const analyzedOpenFeatureRequestCount = analyzedOpenIssues.filter(
+      issue => issue.type === 'Feature Request',
+    ).length;
+    const analyzedOpenQuestionCount = analyzedOpenIssues.filter(
+      issue => issue.type === 'Question',
+    ).length;
+    const analyzedOpenCriticalCount = analyzedOpenIssues.filter(
+      issue => issue.type === 'Bug' && issue.severity === 'CRITICAL',
+    ).length;
+    const analyzedOpenMajorCount = analyzedOpenIssues.filter(
+      issue => issue.type === 'Bug' && issue.severity === 'MAJOR',
+    ).length;
+    const staleOpenCount = analyzedOpenIssues.filter(
+      issue => daysBetween(issue.createdAt, period.end) >= 30,
+    ).length;
+    const closedDurations = issueAnalyses
+      .filter(issue => (issue.lifecycle === 'closed' || issue.lifecycle === 'opened-and-closed') && issue.closedAt)
+      .map(issue => daysBetween(issue.createdAt, issue.closedAt!));
+    const closedWithin7Days = closedDurations.filter(days => days <= 7).length;
+    const closedWithin30Days = closedDurations.filter(days => days <= 30).length;
+    const oldestOpenCriticalAgeDays = analyzedOpenIssues
+      .filter(issue => issue.type === 'Bug' && issue.severity === 'CRITICAL')
+      .map(issue => daysBetween(issue.createdAt, period.end))
+      .sort((a, b) => b - a)[0] ?? null;
+    const oldestOpenMajorAgeDays = analyzedOpenIssues
+      .filter(issue => issue.type === 'Bug' && issue.severity === 'MAJOR')
+      .map(issue => daysBetween(issue.createdAt, period.end))
+      .sort((a, b) => b - a)[0] ?? null;
+
+    const summary = {
+      openBacklog: metrics.openBacklog,
+      issuesOpened: metrics.issuesOpened,
+      issuesClosed: metrics.issuesClosed,
+      pullRequests: metrics.pullRequests,
+      analysisCount: issueAnalyses.length,
+      typeCounts,
+      bugSeverityCounts,
+      issueStatusCounts: {
+        open: openCount,
+        closed: closedCount,
+      },
+      resolutionCounts,
+      closedInWindowCount,
+      categoryBreakdown,
+      backlogHealth: {
+        analyzedOpenBugCount,
+        analyzedOpenQuestionCount,
+        analyzedOpenFeatureRequestCount,
+        analyzedOpenCriticalCount,
+        analyzedOpenMajorCount,
+        staleOpenCount,
+      },
+      operationalHealth: {
+        medianTimeToCloseDays: median(closedDurations),
+        closedWithin7Days,
+        closedWithin30Days,
+        oldestOpenCriticalAgeDays:
+          oldestOpenCriticalAgeDays === null ? null : Number(oldestOpenCriticalAgeDays.toFixed(1)),
+        oldestOpenMajorAgeDays:
+          oldestOpenMajorAgeDays === null ? null : Number(oldestOpenMajorAgeDays.toFixed(1)),
+      },
+      discordSentiment,
+    };
+
+    const previousReport = await loadPreviousReport(
+      mastra,
+      { start: new Date(period.start), end: new Date(period.end) },
+      logger,
+    );
+    const comparison = previousReport
+      ? {
+          backlogDelta: delta(summary.openBacklog, previousReport.summary.openBacklog),
+          issuesOpenedDelta: delta(summary.issuesOpened.total, previousReport.summary.issuesOpened.total),
+          issuesClosedDelta: delta(summary.issuesClosed.total, previousReport.summary.issuesClosed.total),
+          mergedPrDelta: delta(summary.pullRequests.merged, previousReport.summary.pullRequests.merged),
+          analysisCountDelta: delta(summary.analysisCount, previousReport.summary.analysisCount),
+          criticalBugDelta: delta(summary.bugSeverityCounts.CRITICAL, previousReport.summary.bugSeverityCounts.CRITICAL),
+          majorBugDelta: delta(summary.bugSeverityCounts.MAJOR, previousReport.summary.bugSeverityCounts.MAJOR),
+          topCategoryShifts: compareCategories(
+            summary.categoryBreakdown,
+            previousReport.summary.categoryBreakdown,
+          ),
+          sentimentChanged:
+            summary.discordSentiment.overall !== previousReport.summary.discordSentiment.overall,
+          sentimentDeltaSummary:
+            summary.discordSentiment.overall === previousReport.summary.discordSentiment.overall
+              ? null
+              : `Discord sentiment moved from ${previousReport.summary.discordSentiment.overall} to ${summary.discordSentiment.overall}.`,
+        }
+      : {
+          backlogDelta: null,
+          issuesOpenedDelta: null,
+          issuesClosedDelta: null,
+          mergedPrDelta: null,
+          analysisCountDelta: null,
+          criticalBugDelta: null,
+          majorBugDelta: null,
+          topCategoryShifts: [],
+          sentimentChanged: null,
+          sentimentDeltaSummary: null,
+        };
+
+    const takeaways = buildTakeaways({ summary, comparison });
+    const actions = buildActions({ issueAnalyses, summary, comparison });
 
     return {
       generatedAt: new Date().toISOString(),
@@ -925,23 +1282,10 @@ const analyzeDiscordSentimentStep = createStep({
         end: period.end,
         label: period.label,
       },
-      summary: {
-        openBacklog: metrics.openBacklog,
-        issuesOpened: metrics.issuesOpened,
-        issuesClosed: metrics.issuesClosed,
-        pullRequests: metrics.pullRequests,
-        analysisCount: issueAnalyses.length,
-        typeCounts,
-        bugSeverityCounts,
-        issueStatusCounts: {
-          open: openCount,
-          closed: closedCount,
-        },
-        resolutionCounts,
-        closedInWindowCount,
-        categoryBreakdown,
-        discordSentiment,
-      },
+      comparison,
+      takeaways,
+      actions,
+      summary,
       issueAnalyses,
     };
   },
