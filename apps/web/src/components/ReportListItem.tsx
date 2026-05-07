@@ -10,7 +10,11 @@ export function ReportListItem({ entry }: { entry: ReportIndexEntry }) {
     entry.summary.bugSeverityCounts.MINOR;
   const critical = entry.summary.bugSeverityCounts.CRITICAL;
   const preview =
-    entry.takeaways.regressed[0] ?? entry.takeaways.watch[0] ?? entry.takeaways.improved[0] ?? null;
+    entry.briefing?.headline ??
+    entry.takeaways.regressed[0] ??
+    entry.takeaways.watch[0] ??
+    entry.takeaways.improved[0] ??
+    null;
 
   return (
     <Link

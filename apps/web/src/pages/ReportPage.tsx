@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { fetchReport } from '@/lib/api';
 import type { IssueAnalysis, IssueType, Report } from '@/types/report';
 import { SummaryCards } from '@/components/SummaryCards';
@@ -8,7 +8,7 @@ import { AnalysisStats } from '@/components/AnalysisStats';
 import { CategoryTable } from '@/components/CategoryTable';
 import { IssueCard } from '@/components/IssueCard';
 import { ResolutionStats } from '@/components/ResolutionStats';
-import { KeyTakeaways } from '@/components/KeyTakeaways';
+import { WeeklyBriefing } from '@/components/WeeklyBriefing';
 import { formatDateTime, formatDateUTC } from '@/lib/utils';
 
 type Filter = 'all' | IssueType | 'closed';
@@ -23,6 +23,8 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 export function ReportPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const presentMode = searchParams.get('present') === '1';
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
@@ -97,7 +99,13 @@ export function ReportPage() {
             </h1>
           </section>
 
-          <KeyTakeaways takeaways={report.takeaways} comparison={report.comparison} />
+          {report.briefing && (
+            <WeeklyBriefing
+              briefing={report.briefing}
+              comparison={report.comparison}
+              presentMode={presentMode}
+            />
+          )}
 
           <SummaryCards report={report} />
 

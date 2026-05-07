@@ -1,5 +1,6 @@
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { z } from 'zod';
+import { BRIEFING_RESOURCE_ID, BRIEFING_THREAD_ID, briefingAgent } from '../agents/briefing';
 import { discordSentimentAgent } from '../agents/discord-sentiment';
 import { issueThreadAnalysisAgent } from '../agents/issue-thread-analysis';
 import { fetchMessagesInWindow, fetchThreadMessages, getChannelName } from '../shared/discord';
@@ -49,11 +50,6 @@ const categoryBreakdownSchema = z.object({
   Question: z.number(),
 });
 
-const categoryShiftSchema = z.object({
-  category: z.string(),
-  delta: z.number(),
-});
-
 const issueStatusCountsSchema = z.object({
   open: z.number(),
   closed: z.number(),
@@ -67,7 +63,6 @@ const comparisonSchema = z.object({
   analysisCountDelta: z.number().nullable(),
   criticalBugDelta: z.number().nullable(),
   majorBugDelta: z.number().nullable(),
-  topCategoryShifts: z.array(categoryShiftSchema),
   sentimentChanged: z.boolean().nullable(),
   sentimentDeltaSummary: z.string().nullable(),
 });
@@ -85,21 +80,44 @@ const actionsSchema = z.object({
   recurringPainAreas: z.array(z.string()),
 });
 
-const backlogHealthSchema = z.object({
-  analyzedOpenBugCount: z.number(),
-  analyzedOpenQuestionCount: z.number(),
-  analyzedOpenFeatureRequestCount: z.number(),
-  analyzedOpenCriticalCount: z.number(),
-  analyzedOpenMajorCount: z.number(),
-  staleOpenCount: z.number(),
-});
-
 const operationalHealthSchema = z.object({
   medianTimeToCloseDays: z.number().nullable(),
   closedWithin7Days: z.number(),
   closedWithin30Days: z.number(),
-  oldestOpenCriticalAgeDays: z.number().nullable(),
-  oldestOpenMajorAgeDays: z.number().nullable(),
+});
+
+const briefingMovementEnum = z.enum(['improved', 'regressed', 'steady', 'mixed']);
+const briefingSeverityEnum = z.enum(['critical', 'major', 'minor']);
+
+const briefingWinSchema = z.object({
+  text: z.string(),
+  evidence: z.string().nullable(),
+});
+
+const briefingRegressionSchema = z.object({
+  text: z.string(),
+  evidence: z.string().nullable(),
+  severity: briefingSeverityEnum,
+});
+
+const briefingWatchSchema = z.object({
+  text: z.string(),
+  why: z.string(),
+});
+
+const briefingRecurringSchema = z.object({
+  text: z.string(),
+  note: z.string().nullable(),
+});
+
+const briefingSchema = z.object({
+  headline: z.string(),
+  movement: briefingMovementEnum,
+  wins: z.array(briefingWinSchema),
+  regressions: z.array(briefingRegressionSchema),
+  watchlist: z.array(briefingWatchSchema),
+  recurring: z.array(briefingRecurringSchema),
+  talkingPoints: z.array(z.string()),
 });
 
 const workflowInputSchema = z.object({
@@ -199,12 +217,11 @@ const reportSummarySchema = z.object({
   resolutionCounts: resolutionCountsSchema,
   closedInWindowCount: z.number(),
   categoryBreakdown: z.array(categoryBreakdownSchema),
-  backlogHealth: backlogHealthSchema,
   operationalHealth: operationalHealthSchema,
   discordSentiment: discordSentimentSchema,
 });
 
-const reportSchema = z.object({
+const reportWithoutBriefingSchema = z.object({
   generatedAt: z.string(),
   repo: z.object({
     owner: z.string(),
@@ -220,6 +237,10 @@ const reportSchema = z.object({
   actions: actionsSchema,
   summary: reportSummarySchema,
   issueAnalyses: z.array(issueAnalysisSchema),
+});
+
+const reportSchema = reportWithoutBriefingSchema.extend({
+  briefing: briefingSchema.nullable(),
 });
 
 const reportContextSchema = z.object({
@@ -435,21 +456,6 @@ function median(values: number[]): number | null {
   return Number((((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2).toFixed(1));
 }
 
-function compareCategories(
-  current: z.infer<typeof categoryBreakdownSchema>[],
-  previous: z.infer<typeof categoryBreakdownSchema>[] | undefined,
-) {
-  const previousMap = new Map((previous ?? []).map(category => [category.category, category.total]));
-  return current
-    .map(category => ({
-      category: category.category,
-      delta: category.total - (previousMap.get(category.category) ?? 0),
-    }))
-    .filter(category => category.delta !== 0)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.category.localeCompare(b.category))
-    .slice(0, 5);
-}
-
 function buildTakeaways(args: {
   summary: z.infer<typeof reportSummarySchema>;
   comparison: z.infer<typeof comparisonSchema>;
@@ -482,20 +488,6 @@ function buildTakeaways(args: {
     regressed.push('Discord sentiment turned negative in the general channel.');
   }
 
-  const topShift = comparison.topCategoryShifts[0];
-  if (topShift && topShift.delta >= 5) {
-    watch.push(`${topShift.category} discussion volume rose by ${topShift.delta} issue${topShift.delta === 1 ? '' : 's'}.`);
-  }
-  if (summary.backlogHealth.analyzedOpenCriticalCount > 0) {
-    watch.push(
-      `${summary.backlogHealth.analyzedOpenCriticalCount} analyzed open critical bug${summary.backlogHealth.analyzedOpenCriticalCount === 1 ? '' : 's'} need follow-up.`,
-    );
-  }
-  if (summary.backlogHealth.staleOpenCount > 0) {
-    watch.push(
-      `${summary.backlogHealth.staleOpenCount} analyzed open issue${summary.backlogHealth.staleOpenCount === 1 ? '' : 's'} are older than 30 days.`,
-    );
-  }
   if (comparison.sentimentDeltaSummary) {
     watch.push(comparison.sentimentDeltaSummary);
   }
@@ -551,18 +543,8 @@ function buildActions(args: {
     .map(issue => issue.issueNumber);
 
   const recommendedActions: string[] = [];
-  if (summary.backlogHealth.analyzedOpenCriticalCount > 0) {
-    recommendedActions.push(
-      `Assign owners for ${summary.backlogHealth.analyzedOpenCriticalCount} analyzed open critical bug${summary.backlogHealth.analyzedOpenCriticalCount === 1 ? '' : 's'} before the next report.`,
-    );
-  }
   if ((comparison.backlogDelta ?? 0) > 0 && summary.issuesClosed.total < summary.issuesOpened.total) {
     recommendedActions.push('Spend one triage pass on backlog reduction; intake outpaced closures this window.');
-  }
-  if (comparison.topCategoryShifts[0]?.delta > 0) {
-    recommendedActions.push(
-      `Review ${comparison.topCategoryShifts[0].category} as the fastest-growing issue category this window.`,
-    );
   }
   if (summary.discordSentiment.overall === 'negative' || summary.discordSentiment.overall === 'mixed') {
     recommendedActions.push('Use Discord pain points to drive the next maintainer triage agenda.');
@@ -987,7 +969,7 @@ const collectIssueAnalysesStep = createStep({
 const analyzeDiscordSentimentStep = createStep({
   id: 'analyze-discord-sentiment',
   inputSchema: reportDraftSchema,
-  outputSchema: reportSchema,
+  outputSchema: reportWithoutBriefingSchema,
   stateSchema: reportStateSchema,
   execute: async ({ inputData, state, mastra }) => {
     const { repo, period, config, metrics } = requireReportState(state);
@@ -1167,36 +1149,11 @@ const analyzeDiscordSentimentStep = createStep({
     }
 
     const categoryBreakdown = [...categoryMap.values()].sort((a, b) => b.total - a.total);
-    const analyzedOpenIssues = issueAnalyses.filter(issue => issue.issueState === 'open');
-    const analyzedOpenBugCount = analyzedOpenIssues.filter(issue => issue.type === 'Bug').length;
-    const analyzedOpenFeatureRequestCount = analyzedOpenIssues.filter(
-      issue => issue.type === 'Feature Request',
-    ).length;
-    const analyzedOpenQuestionCount = analyzedOpenIssues.filter(
-      issue => issue.type === 'Question',
-    ).length;
-    const analyzedOpenCriticalCount = analyzedOpenIssues.filter(
-      issue => issue.type === 'Bug' && issue.severity === 'CRITICAL',
-    ).length;
-    const analyzedOpenMajorCount = analyzedOpenIssues.filter(
-      issue => issue.type === 'Bug' && issue.severity === 'MAJOR',
-    ).length;
-    const staleOpenCount = analyzedOpenIssues.filter(
-      issue => daysBetween(issue.createdAt, period.end) >= 30,
-    ).length;
     const closedDurations = issueAnalyses
       .filter(issue => (issue.lifecycle === 'closed' || issue.lifecycle === 'opened-and-closed') && issue.closedAt)
       .map(issue => daysBetween(issue.createdAt, issue.closedAt!));
     const closedWithin7Days = closedDurations.filter(days => days <= 7).length;
     const closedWithin30Days = closedDurations.filter(days => days <= 30).length;
-    const oldestOpenCriticalAgeDays = analyzedOpenIssues
-      .filter(issue => issue.type === 'Bug' && issue.severity === 'CRITICAL')
-      .map(issue => daysBetween(issue.createdAt, period.end))
-      .sort((a, b) => b - a)[0] ?? null;
-    const oldestOpenMajorAgeDays = analyzedOpenIssues
-      .filter(issue => issue.type === 'Bug' && issue.severity === 'MAJOR')
-      .map(issue => daysBetween(issue.createdAt, period.end))
-      .sort((a, b) => b - a)[0] ?? null;
 
     const summary = {
       openBacklog: metrics.openBacklog,
@@ -1213,22 +1170,10 @@ const analyzeDiscordSentimentStep = createStep({
       resolutionCounts,
       closedInWindowCount,
       categoryBreakdown,
-      backlogHealth: {
-        analyzedOpenBugCount,
-        analyzedOpenQuestionCount,
-        analyzedOpenFeatureRequestCount,
-        analyzedOpenCriticalCount,
-        analyzedOpenMajorCount,
-        staleOpenCount,
-      },
       operationalHealth: {
         medianTimeToCloseDays: median(closedDurations),
         closedWithin7Days,
         closedWithin30Days,
-        oldestOpenCriticalAgeDays:
-          oldestOpenCriticalAgeDays === null ? null : Number(oldestOpenCriticalAgeDays.toFixed(1)),
-        oldestOpenMajorAgeDays:
-          oldestOpenMajorAgeDays === null ? null : Number(oldestOpenMajorAgeDays.toFixed(1)),
       },
       discordSentiment,
     };
@@ -1247,10 +1192,6 @@ const analyzeDiscordSentimentStep = createStep({
           analysisCountDelta: delta(summary.analysisCount, previousReport.summary.analysisCount),
           criticalBugDelta: delta(summary.bugSeverityCounts.CRITICAL, previousReport.summary.bugSeverityCounts.CRITICAL),
           majorBugDelta: delta(summary.bugSeverityCounts.MAJOR, previousReport.summary.bugSeverityCounts.MAJOR),
-          topCategoryShifts: compareCategories(
-            summary.categoryBreakdown,
-            previousReport.summary.categoryBreakdown,
-          ),
           sentimentChanged:
             summary.discordSentiment.overall !== previousReport.summary.discordSentiment.overall,
           sentimentDeltaSummary:
@@ -1266,7 +1207,6 @@ const analyzeDiscordSentimentStep = createStep({
           analysisCountDelta: null,
           criticalBugDelta: null,
           majorBugDelta: null,
-          topCategoryShifts: [],
           sentimentChanged: null,
           sentimentDeltaSummary: null,
         };
@@ -1291,6 +1231,171 @@ const analyzeDiscordSentimentStep = createStep({
   },
 });
 
+function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefingSchema>): string {
+  const { period, repo, summary, issueAnalyses, comparison, takeaways, actions } = report;
+  const lines: string[] = [];
+
+  lines.push(`# Weekly OSS report — period ${period.start} → ${period.end}`);
+  lines.push(`Generated: ${report.generatedAt}`);
+  lines.push(`Repo: ${repo.owner}/${repo.name}`);
+  lines.push('');
+
+  lines.push('## Issues');
+  lines.push(
+    `Opened ${summary.issuesOpened.total} (discord ${summary.issuesOpened.discord}, github ${summary.issuesOpened.github})`,
+  );
+  lines.push(
+    `Closed ${summary.issuesClosed.total} (discord ${summary.issuesClosed.discord}, github ${summary.issuesClosed.github})`,
+  );
+  lines.push(`Open backlog: ${summary.openBacklog}`);
+  lines.push(
+    `PRs: opened ${summary.pullRequests.opened}, merged ${summary.pullRequests.merged}`,
+  );
+  lines.push('');
+
+  lines.push('## Analyzed');
+  const t = summary.typeCounts;
+  lines.push(`Total analyzed: ${summary.analysisCount}`);
+  lines.push(`By type — Bug ${t.Bug}, Feature ${t['Feature Request']}, Question ${t.Question}`);
+  const sev = summary.bugSeverityCounts;
+  lines.push(`Bug severity — Critical ${sev.CRITICAL}, Major ${sev.MAJOR}, Minor ${sev.MINOR}`);
+  const status = summary.issueStatusCounts;
+  lines.push(`Status — Open ${status.open}, Closed ${status.closed}`);
+  const res = summary.resolutionCounts;
+  lines.push(
+    `Closed in window: ${summary.closedInWindowCount} (fixed ${res.fixed}, wontfix ${res.wontfix}, duplicate ${res.duplicate}, stale ${res.stale}, unknown ${res.unknown})`,
+  );
+  lines.push('');
+
+  lines.push('## Operational health (closed-this-window)');
+  const oh = summary.operationalHealth;
+  lines.push(
+    `Median time-to-close (days): ${oh.medianTimeToCloseDays ?? 'n/a'}, closed within 7d: ${oh.closedWithin7Days}, within 30d: ${oh.closedWithin30Days}`,
+  );
+  lines.push('');
+
+  if (summary.categoryBreakdown.length > 0) {
+    lines.push('## Categories');
+    for (const c of summary.categoryBreakdown.slice(0, 12)) {
+      lines.push(
+        `- ${c.category}: total ${c.total} (Bug ${c.Bug}, Feature ${c['Feature Request']}, Question ${c.Question})`,
+      );
+    }
+    lines.push('');
+  }
+
+  const topIssues = [...issueAnalyses]
+    .sort((a, b) => {
+      const sevRank = (s: string) => (s === 'CRITICAL' ? 3 : s === 'MAJOR' ? 2 : 1);
+      const at = a.type === 'Bug' ? 1 : 0;
+      const bt = b.type === 'Bug' ? 1 : 0;
+      if (at !== bt) return bt - at;
+      return sevRank(b.severity) - sevRank(a.severity);
+    })
+    .slice(0, 15);
+  if (topIssues.length > 0) {
+    lines.push('## Top issues this week');
+    for (const issue of topIssues) {
+      const tags: string[] = [issue.type, issue.severity, issue.issueState, issue.lifecycle];
+      if (issue.closureReason) tags.push(`closure=${issue.closureReason}`);
+      lines.push(
+        `- #${issue.issueNumber} [${tags.join(' · ')}] ${issue.issueTitle} — ${issue.summary}`,
+      );
+    }
+    lines.push('');
+  }
+
+  const ds = summary.discordSentiment;
+  lines.push('## Discord sentiment');
+  lines.push(`Overall: ${ds.overall}`);
+  lines.push(`Volume: ${ds.messageCount} msgs, ${ds.uniqueAuthorCount} unique authors`);
+  lines.push(`Summary: ${ds.summary}`);
+  if (ds.weekOverWeek) {
+    lines.push(`Δ vs last: ${ds.weekOverWeek}`);
+  }
+  if (ds.aspects.length > 0) {
+    for (const aspect of ds.aspects) {
+      const positives = aspect.positives.map((s) => s.headline).join('; ') || 'none';
+      const pains = aspect.painPoints
+        .map((p) => `${p.severity}: ${p.headline}`)
+        .join('; ') || 'none';
+      lines.push(`- ${aspect.aspect}: positives — ${positives}; pains — ${pains}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('## Deterministic deltas vs prior report');
+  const fmt = (n: number | null) => (n === null ? 'n/a' : n >= 0 ? `+${n}` : `${n}`);
+  lines.push(
+    `Issues opened Δ ${fmt(comparison.issuesOpenedDelta)}, closed Δ ${fmt(comparison.issuesClosedDelta)}, backlog Δ ${fmt(comparison.backlogDelta)}, analyzed Δ ${fmt(comparison.analysisCountDelta)}, critical bugs Δ ${fmt(comparison.criticalBugDelta)}, major bugs Δ ${fmt(comparison.majorBugDelta)}, PRs merged Δ ${fmt(comparison.mergedPrDelta)}`,
+  );
+  if (comparison.sentimentChanged !== null) {
+    lines.push(
+      `Sentiment changed: ${comparison.sentimentChanged}${comparison.sentimentDeltaSummary ? ` — ${comparison.sentimentDeltaSummary}` : ''}`,
+    );
+  }
+  lines.push('');
+
+  lines.push('## Pre-computed takeaways');
+  if (takeaways.improved.length) lines.push(`Improved: ${takeaways.improved.join(' | ')}`);
+  if (takeaways.regressed.length) lines.push(`Regressed: ${takeaways.regressed.join(' | ')}`);
+  if (takeaways.watch.length) lines.push(`Watch: ${takeaways.watch.join(' | ')}`);
+  lines.push('');
+
+  lines.push('## Pre-computed action items');
+  if (actions.priorityIssues.length)
+    lines.push(`Priority issues: ${actions.priorityIssues.map((n) => `#${n}`).join(', ')}`);
+  if (actions.recommendedActions.length)
+    lines.push(`Recommended actions: ${actions.recommendedActions.join(' | ')}`);
+  if (actions.needsDocsAttention.length)
+    lines.push(`Docs attention: ${actions.needsDocsAttention.join(' | ')}`);
+  if (actions.recurringPainAreas.length)
+    lines.push(`Recurring pain: ${actions.recurringPainAreas.join(' | ')}`);
+
+  return lines.join('\n');
+}
+
+const generateBriefingStep = createStep({
+  id: 'generate-briefing',
+  inputSchema: reportWithoutBriefingSchema,
+  outputSchema: reportSchema,
+  stateSchema: reportStateSchema,
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    let briefing: z.infer<typeof briefingSchema> | null = null;
+
+    try {
+      const payload = formatBriefingPayload(inputData);
+      const result = await briefingAgent.generate(payload, {
+        memory: {
+          thread: BRIEFING_THREAD_ID,
+          resource: BRIEFING_RESOURCE_ID,
+        },
+        structuredOutput: {
+          schema: briefingSchema,
+          errorStrategy: 'warn',
+        },
+      });
+      if (result.object) {
+        briefing = result.object;
+      } else {
+        logger?.warn('Briefing agent returned no structured object', {
+          text: result.text?.slice(0, 200),
+        });
+      }
+    } catch (error) {
+      logger?.error('Briefing generation failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return {
+      ...inputData,
+      briefing,
+    };
+  },
+});
+
 export const ossReportWorkflow = createWorkflow({
   id: 'oss-report-workflow',
   inputSchema: workflowInputSchema,
@@ -1303,4 +1408,5 @@ export const ossReportWorkflow = createWorkflow({
   .foreach(analyzeIssueStep, { concurrency: ISSUE_ANALYSIS_CONCURRENCY })
   .then(collectIssueAnalysesStep)
   .then(analyzeDiscordSentimentStep)
+  .then(generateBriefingStep)
   .commit();

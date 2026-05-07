@@ -55,6 +55,7 @@ function reportToIndexEntry(runId: string, report: Report): ReportIndexEntry {
     period: report.period,
     comparison: report.comparison,
     takeaways: report.takeaways,
+    briefing: report.briefing ?? null,
     summary: {
       issuesOpened: report.summary.issuesOpened,
       issuesClosed: report.summary.issuesClosed,

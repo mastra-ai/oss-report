@@ -4,12 +4,14 @@ import { DuckDBStore } from '@mastra/duckdb';
 import { LibSQLStore } from '@mastra/libsql';
 import { PinoLogger } from '@mastra/loggers';
 import { CloudExporter, DefaultExporter, Observability, SensitiveDataFilter } from '@mastra/observability';
+import { briefingAgent } from './agents/briefing';
 import { discordSentimentAgent } from './agents/discord-sentiment';
 import { issueThreadAnalysisAgent } from './agents/issue-thread-analysis';
 import { ossReportWorkflow } from './workflows/oss-report';
 
 export const mastra = new Mastra({
   agents: {
+    briefingAgent,
     discordSentimentAgent,
     issueThreadAnalysisAgent,
   },

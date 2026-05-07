@@ -54,11 +54,6 @@ export interface CategoryBreakdown {
   Question: number;
 }
 
-export interface CategoryShift {
-  category: string;
-  delta: number;
-}
-
 export interface IssueStatusCounts {
   open: number;
   closed: number;
@@ -72,7 +67,6 @@ export interface Comparison {
   analysisCountDelta: number | null;
   criticalBugDelta: number | null;
   majorBugDelta: number | null;
-  topCategoryShifts: CategoryShift[];
   sentimentChanged: boolean | null;
   sentimentDeltaSummary: string | null;
 }
@@ -90,21 +84,10 @@ export interface ReportActions {
   recurringPainAreas: string[];
 }
 
-export interface BacklogHealth {
-  analyzedOpenBugCount: number;
-  analyzedOpenQuestionCount: number;
-  analyzedOpenFeatureRequestCount: number;
-  analyzedOpenCriticalCount: number;
-  analyzedOpenMajorCount: number;
-  staleOpenCount: number;
-}
-
 export interface OperationalHealth {
   medianTimeToCloseDays: number | null;
   closedWithin7Days: number;
   closedWithin30Days: number;
-  oldestOpenCriticalAgeDays: number | null;
-  oldestOpenMajorAgeDays: number | null;
 }
 
 export type PainSeverity = 'blocker' | 'friction' | 'nit';
@@ -203,9 +186,42 @@ export interface ReportSummary {
   resolutionCounts: ResolutionCounts;
   closedInWindowCount: number;
   categoryBreakdown: CategoryBreakdown[];
-  backlogHealth: BacklogHealth;
   operationalHealth: OperationalHealth;
   discordSentiment: DiscordSentiment;
+}
+
+export type BriefingMovement = 'improved' | 'regressed' | 'steady' | 'mixed';
+export type BriefingSeverity = 'critical' | 'major' | 'minor';
+
+export interface BriefingWin {
+  text: string;
+  evidence: string | null;
+}
+
+export interface BriefingRegression {
+  text: string;
+  evidence: string | null;
+  severity: BriefingSeverity;
+}
+
+export interface BriefingWatch {
+  text: string;
+  why: string;
+}
+
+export interface BriefingRecurring {
+  text: string;
+  note: string | null;
+}
+
+export interface Briefing {
+  headline: string;
+  movement: BriefingMovement;
+  wins: BriefingWin[];
+  regressions: BriefingRegression[];
+  watchlist: BriefingWatch[];
+  recurring: BriefingRecurring[];
+  talkingPoints: string[];
 }
 
 export interface Report {
@@ -215,6 +231,7 @@ export interface Report {
   comparison: Comparison;
   takeaways: Takeaways;
   actions: ReportActions;
+  briefing: Briefing | null;
   summary: ReportSummary;
   issueAnalyses: IssueAnalysis[];
 }
@@ -226,6 +243,7 @@ export interface ReportIndexEntry {
   period: ReportPeriod;
   comparison: Comparison;
   takeaways: Takeaways;
+  briefing: Briefing | null;
   summary: {
     issuesOpened: IssueCounts;
     issuesClosed: IssueCounts;

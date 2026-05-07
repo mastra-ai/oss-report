@@ -11,7 +11,7 @@ function defaultRange(): { start: string; end: string } {
   const now = new Date();
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 7);
+  start.setUTCDate(start.getUTCDate() - 6);
   return { start: toInputDate(start), end: toInputDate(end) };
 }
 
