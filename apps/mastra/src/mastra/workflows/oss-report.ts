@@ -126,7 +126,6 @@ export const briefingAgentOutputSchema = z.object({
 });
 
 export const briefingSchema = briefingAgentOutputSchema.extend({
-  supersedes: z.string().nullable().optional(),
   correctionsApplied: z.array(briefingCorrectionSchema).optional(),
 });
 
@@ -247,7 +246,6 @@ export const reportWithoutBriefingSchema = z.object({
 });
 
 export const generateBriefingInputSchema = reportWithoutBriefingSchema.extend({
-  supersedes: z.string().nullable().optional(),
   correctionsApplied: z.array(briefingCorrectionSchema).optional(),
 });
 
@@ -1449,7 +1447,7 @@ const generateBriefingStep = createStep({
     const logger = mastra?.getLogger();
     let briefing: z.infer<typeof briefingSchema> | null = null;
 
-    const { supersedes, correctionsApplied, ...reportFields } = inputData;
+    const { correctionsApplied, ...reportFields } = inputData;
 
     try {
       const payload = formatBriefingPayload(reportFields);
@@ -1466,7 +1464,6 @@ const generateBriefingStep = createStep({
       if (result.object) {
         briefing = {
           ...result.object,
-          supersedes: null,
           correctionsApplied: [],
         };
       } else {
@@ -1480,11 +1477,10 @@ const generateBriefingStep = createStep({
       });
     }
 
-    if (briefing && (supersedes || (correctionsApplied && correctionsApplied.length > 0))) {
+    if (briefing && correctionsApplied && correctionsApplied.length > 0) {
       briefing = {
         ...briefing,
-        supersedes: supersedes ?? null,
-        correctionsApplied: correctionsApplied ?? [],
+        correctionsApplied,
       };
     }
 

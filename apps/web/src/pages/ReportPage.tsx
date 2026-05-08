@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { fetchReport, rebriefRun, type IssueEdit } from '@/lib/api';
 import type { IssueAnalysis, IssueType, Report } from '@/types/report';
 import { SummaryCards } from '@/components/SummaryCards';
@@ -23,7 +23,6 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 export function ReportPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const presentMode = searchParams.get('present') === '1';
   const [report, setReport] = useState<Report | null>(null);
@@ -77,10 +76,13 @@ export function ReportPage() {
         issueNumber,
         ...edit,
       }));
-      const response = await rebriefRun(id, editList);
-      navigate(`/reports/${response.newRunId}`);
+      await rebriefRun(id, editList);
+      const refreshed = await fetchReport(id);
+      setReport(refreshed);
+      setEdits(new Map());
     } catch (err) {
       setRebriefError(err instanceof Error ? err.message : String(err));
+    } finally {
       setIsRebriefing(false);
     }
   };
@@ -147,7 +149,7 @@ export function ReportPage() {
           )}
 
           {edits.size > 0 && (
-            <div className="sticky top-2 z-10 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+            <div className="sticky top-2 z-10 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/40 bg-amber-50 px-4 py-3 text-sm shadow-sm dark:bg-amber-950">
               <span className="font-medium text-amber-700 dark:text-amber-400">
                 {edits.size} correction{edits.size === 1 ? '' : 's'} pending
               </span>

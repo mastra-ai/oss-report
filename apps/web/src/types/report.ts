@@ -222,7 +222,6 @@ export interface Briefing {
   watchlist: BriefingWatch[];
   recurring: BriefingRecurring[];
   talkingPoints: string[];
-  supersedes?: string | null;
   correctionsApplied?: BriefingCorrection[];
 }
 
@@ -246,7 +245,6 @@ export interface ReportIndexEntry {
   comparison: Comparison;
   takeaways: Takeaways;
   briefing: Briefing | null;
-  supersedes?: string | null;
   summary: {
     issuesOpened: IssueCounts;
     issuesClosed: IssueCounts;

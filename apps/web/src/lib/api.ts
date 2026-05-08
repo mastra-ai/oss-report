@@ -56,7 +56,6 @@ function reportToIndexEntry(runId: string, report: Report): ReportIndexEntry {
     comparison: report.comparison,
     takeaways: report.takeaways,
     briefing: report.briefing ?? null,
-    supersedes: report.briefing?.supersedes ?? null,
     summary: {
       issuesOpened: report.summary.issuesOpened,
       issuesClosed: report.summary.issuesClosed,
@@ -77,21 +76,15 @@ export async function fetchReportIndex(): Promise<ReportIndexEntry[]> {
   }
 
   const entries: ReportIndexEntry[] = [];
-  const supersededIds = new Set<string>();
   for (const run of response.runs) {
     const snapshot = parseSnapshot(run.snapshot);
     const result = snapshot?.result;
     if (!isReport(result)) continue;
     entries.push(reportToIndexEntry(run.runId, result));
-    const supersedes = result.briefing?.supersedes;
-    if (typeof supersedes === 'string' && supersedes) {
-      supersededIds.add(supersedes);
-    }
   }
 
-  const visible = entries.filter((entry) => !supersededIds.has(entry.id));
-  visible.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
-  return visible;
+  entries.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+  return entries;
 }
 
 export async function startReportRun(params: {
@@ -180,8 +173,8 @@ export type IssueEdit = {
 };
 
 export interface RebriefResponse {
-  newRunId: string;
-  originalRunId: string;
+  runId: string;
+  status: string;
   correctionsApplied: Array<{
     issueNumber: number;
     changed: Array<'severity' | 'type' | 'summary'>;

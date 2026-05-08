@@ -128,19 +128,17 @@ export const mastra = new Mastra({
             actions: editedActions,
             summary: editedSummary,
             issueAnalyses: editedAnalyses,
-            supersedes: runId,
             correctionsApplied: applied,
           };
 
           try {
-            const newRun = await workflow.createRun();
-            const result = await newRun.timeTravel({
+            const run = await workflow.createRun({ runId });
+            const result = await run.timeTravel({
               step: 'generate-briefing',
               inputData: editedReport,
             });
             return c.json({
-              newRunId: newRun.runId,
-              originalRunId: runId,
+              runId,
               status: result.status,
               correctionsApplied: applied,
             });
