@@ -110,7 +110,12 @@ const briefingRecurringSchema = z.object({
   note: z.string().nullable(),
 });
 
-const briefingSchema = z.object({
+const briefingCorrectionSchema = z.object({
+  issueNumber: z.number(),
+  changed: z.array(z.enum(['severity', 'type', 'summary'])),
+});
+
+export const briefingAgentOutputSchema = z.object({
   headline: z.string(),
   movement: briefingMovementEnum,
   wins: z.array(briefingWinSchema),
@@ -118,6 +123,11 @@ const briefingSchema = z.object({
   watchlist: z.array(briefingWatchSchema),
   recurring: z.array(briefingRecurringSchema),
   talkingPoints: z.array(z.string()),
+});
+
+export const briefingSchema = briefingAgentOutputSchema.extend({
+  supersedes: z.string().nullable().optional(),
+  correctionsApplied: z.array(briefingCorrectionSchema).optional(),
 });
 
 const workflowInputSchema = z.object({
@@ -151,15 +161,11 @@ const sentimentSignalSchema = z.object({
   messageUrls: z.array(z.string()),
 });
 
-const painPointSchema = sentimentSignalSchema.extend({
-  severity: z.enum(['blocker', 'friction', 'nit']),
-});
-
 const aspectSentimentSchema = z.object({
   aspect: aspectEnum,
   sentiment: z.enum(['positive', 'negative', 'mixed']),
   positives: z.array(sentimentSignalSchema),
-  painPoints: z.array(painPointSchema),
+  painPoints: z.array(sentimentSignalSchema),
 });
 
 const discordSentimentSchema = z.object({
@@ -184,7 +190,7 @@ const resolutionCountsSchema = z.object({
   unknown: z.number(),
 });
 
-const issueAnalysisSchema = z.object({
+export const issueAnalysisSchema = z.object({
   issueNumber: z.number(),
   issueTitle: z.string(),
   issueUrl: z.string().url(),
@@ -203,9 +209,10 @@ const issueAnalysisSchema = z.object({
   type: z.enum(['Bug', 'Feature Request', 'Question']),
   category: z.string(),
   severity: z.enum(['MINOR', 'MAJOR', 'CRITICAL']),
+  correctedAt: z.string().nullable().optional(),
 });
 
-const reportSummarySchema = z.object({
+export const reportSummarySchema = z.object({
   openBacklog: z.number(),
   issuesOpened: issueCountsSchema,
   issuesClosed: issueCountsSchema,
@@ -221,7 +228,7 @@ const reportSummarySchema = z.object({
   discordSentiment: discordSentimentSchema,
 });
 
-const reportWithoutBriefingSchema = z.object({
+export const reportWithoutBriefingSchema = z.object({
   generatedAt: z.string(),
   repo: z.object({
     owner: z.string(),
@@ -239,7 +246,12 @@ const reportWithoutBriefingSchema = z.object({
   issueAnalyses: z.array(issueAnalysisSchema),
 });
 
-const reportSchema = reportWithoutBriefingSchema.extend({
+export const generateBriefingInputSchema = reportWithoutBriefingSchema.extend({
+  supersedes: z.string().nullable().optional(),
+  correctionsApplied: z.array(briefingCorrectionSchema).optional(),
+});
+
+export const reportSchema = reportWithoutBriefingSchema.extend({
   briefing: briefingSchema.nullable(),
 });
 
@@ -375,7 +387,7 @@ function parseRunSnapshot(snapshot: unknown): Record<string, unknown> | null {
   return null;
 }
 
-async function loadPreviousReport(
+export async function loadPreviousReport(
   mastra: { getWorkflow?: (id: string) => unknown } | undefined,
   currentPeriod: { start: Date; end: Date },
   logger?: { info?: (message: string) => void; warn?: (message: string) => void },
@@ -456,7 +468,178 @@ function median(values: number[]): number | null {
   return Number((((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2).toFixed(1));
 }
 
-function buildTakeaways(args: {
+export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisSchema>[]) {
+  const typeCounts: z.infer<typeof typeCountsSchema> = {
+    Bug: 0,
+    'Feature Request': 0,
+    Question: 0,
+  };
+  const bugSeverityCounts: z.infer<typeof severityCountsSchema> = {
+    CRITICAL: 0,
+    MAJOR: 0,
+    MINOR: 0,
+  };
+  const resolutionCounts: z.infer<typeof resolutionCountsSchema> = {
+    fixed: 0,
+    wontfix: 0,
+    duplicate: 0,
+    stale: 0,
+    unknown: 0,
+  };
+  const categoryMap = new Map<string, z.infer<typeof categoryBreakdownSchema>>();
+  let openCount = 0;
+  let closedCount = 0;
+  let closedInWindowCount = 0;
+
+  for (const a of issueAnalyses) {
+    typeCounts[a.type] += 1;
+
+    if (a.type === 'Bug') {
+      bugSeverityCounts[a.severity] += 1;
+    }
+
+    if (a.issueState === 'open') openCount += 1;
+    else closedCount += 1;
+
+    if (a.lifecycle === 'closed' || a.lifecycle === 'opened-and-closed') {
+      closedInWindowCount += 1;
+      if (a.closureReason) {
+        resolutionCounts[a.closureReason] += 1;
+      }
+    }
+
+    let bucket = categoryMap.get(a.category);
+    if (!bucket) {
+      bucket = {
+        category: a.category,
+        total: 0,
+        Bug: 0,
+        'Feature Request': 0,
+        Question: 0,
+      };
+      categoryMap.set(a.category, bucket);
+    }
+    bucket.total += 1;
+    bucket[a.type] += 1;
+  }
+
+  const categoryBreakdown = [...categoryMap.values()].sort((a, b) => b.total - a.total);
+  const closedDurations = issueAnalyses
+    .filter(issue => (issue.lifecycle === 'closed' || issue.lifecycle === 'opened-and-closed') && issue.closedAt)
+    .map(issue => daysBetween(issue.createdAt, issue.closedAt!));
+  const closedWithin7Days = closedDurations.filter(days => days <= 7).length;
+  const closedWithin30Days = closedDurations.filter(days => days <= 30).length;
+
+  return {
+    typeCounts,
+    bugSeverityCounts,
+    issueStatusCounts: { open: openCount, closed: closedCount },
+    resolutionCounts,
+    closedInWindowCount,
+    categoryBreakdown,
+    operationalHealth: {
+      medianTimeToCloseDays: median(closedDurations),
+      closedWithin7Days,
+      closedWithin30Days,
+    },
+  };
+}
+
+export function computeComparison(
+  summary: z.infer<typeof reportSummarySchema>,
+  previousReport: z.infer<typeof reportSchema> | null,
+): z.infer<typeof comparisonSchema> {
+  if (!previousReport) {
+    return {
+      backlogDelta: null,
+      issuesOpenedDelta: null,
+      issuesClosedDelta: null,
+      mergedPrDelta: null,
+      analysisCountDelta: null,
+      criticalBugDelta: null,
+      majorBugDelta: null,
+      sentimentChanged: null,
+      sentimentDeltaSummary: null,
+    };
+  }
+  return {
+    backlogDelta: delta(summary.openBacklog, previousReport.summary.openBacklog),
+    issuesOpenedDelta: delta(summary.issuesOpened.total, previousReport.summary.issuesOpened.total),
+    issuesClosedDelta: delta(summary.issuesClosed.total, previousReport.summary.issuesClosed.total),
+    mergedPrDelta: delta(summary.pullRequests.merged, previousReport.summary.pullRequests.merged),
+    analysisCountDelta: delta(summary.analysisCount, previousReport.summary.analysisCount),
+    criticalBugDelta: delta(summary.bugSeverityCounts.CRITICAL, previousReport.summary.bugSeverityCounts.CRITICAL),
+    majorBugDelta: delta(summary.bugSeverityCounts.MAJOR, previousReport.summary.bugSeverityCounts.MAJOR),
+    sentimentChanged:
+      summary.discordSentiment.overall !== previousReport.summary.discordSentiment.overall,
+    sentimentDeltaSummary:
+      summary.discordSentiment.overall === previousReport.summary.discordSentiment.overall
+        ? null
+        : `Discord sentiment moved from ${previousReport.summary.discordSentiment.overall} to ${summary.discordSentiment.overall}.`,
+  };
+}
+
+export function applyIssueEdits(
+  analyses: z.infer<typeof issueAnalysisSchema>[],
+  edits: Array<{
+    issueNumber: number;
+    severity?: 'MINOR' | 'MAJOR' | 'CRITICAL';
+    type?: 'Bug' | 'Feature Request' | 'Question';
+    summary?: string;
+  }>,
+): {
+  analyses: z.infer<typeof issueAnalysisSchema>[];
+  applied: Array<{ issueNumber: number; changed: Array<'severity' | 'type' | 'summary'> }>;
+} {
+  const editsByNumber = new Map(edits.map(e => [e.issueNumber, e]));
+  const applied: Array<{ issueNumber: number; changed: Array<'severity' | 'type' | 'summary'> }> = [];
+  const correctedAt = new Date().toISOString();
+
+  const next = analyses.map(analysis => {
+    const edit = editsByNumber.get(analysis.issueNumber);
+    if (!edit) return analysis;
+
+    const changed: Array<'severity' | 'type' | 'summary'> = [];
+    let nextType = analysis.type;
+    let nextSeverity = analysis.severity;
+    let nextSummary = analysis.summary;
+
+    if (edit.type !== undefined && edit.type !== analysis.type) {
+      nextType = edit.type;
+      changed.push('type');
+    }
+    if (edit.severity !== undefined && edit.severity !== analysis.severity) {
+      nextSeverity = edit.severity;
+      changed.push('severity');
+    }
+    if (edit.summary !== undefined && edit.summary !== analysis.summary) {
+      nextSummary = edit.summary;
+      changed.push('summary');
+    }
+
+    // Non-bugs always have MINOR severity (matches analyzeIssueStep coercion).
+    if (nextType !== 'Bug' && nextSeverity !== 'MINOR') {
+      nextSeverity = 'MINOR';
+      if (!changed.includes('severity')) changed.push('severity');
+    }
+
+    if (changed.length === 0) return analysis;
+
+    applied.push({ issueNumber: analysis.issueNumber, changed });
+
+    return {
+      ...analysis,
+      type: nextType,
+      severity: nextSeverity,
+      summary: nextSummary,
+      correctedAt,
+    };
+  });
+
+  return { analyses: next, applied };
+}
+
+export function buildTakeaways(args: {
   summary: z.infer<typeof reportSummarySchema>;
   comparison: z.infer<typeof comparisonSchema>;
 }) {
@@ -509,7 +692,7 @@ function buildTakeaways(args: {
   };
 }
 
-function buildActions(args: {
+export function buildActions(args: {
   issueAnalyses: z.infer<typeof issueAnalysisSchema>[];
   summary: z.infer<typeof reportSummarySchema>;
   comparison: z.infer<typeof comparisonSchema>;
@@ -1049,7 +1232,6 @@ const analyzeDiscordSentimentStep = createStep({
                       headline: z.string(),
                       detail: z.string().nullable(),
                       messageIds: z.array(z.string()),
-                      severity: z.enum(['blocker', 'friction', 'nit']),
                     }),
                   ),
                 }),
@@ -1077,7 +1259,9 @@ const analyzeDiscordSentimentStep = createStep({
             aspect: a.aspect,
             sentiment: a.sentiment,
             positives: a.positives.map(hydrate),
-            painPoints: a.painPoints.map(hydrate),
+            painPoints: a.painPoints
+              .map(hydrate)
+              .sort((x, y) => y.messageIds.length - x.messageIds.length),
           })),
           messageCount: generalMessages.length,
           uniqueAuthorCount: uniqueAuthors,
@@ -1094,87 +1278,14 @@ const analyzeDiscordSentimentStep = createStep({
     }
 
     // ---- Roll-ups ----
-    const typeCounts: z.infer<typeof typeCountsSchema> = {
-      Bug: 0,
-      'Feature Request': 0,
-      Question: 0,
-    };
-    const bugSeverityCounts: z.infer<typeof severityCountsSchema> = {
-      CRITICAL: 0,
-      MAJOR: 0,
-      MINOR: 0,
-    };
-    const resolutionCounts: z.infer<typeof resolutionCountsSchema> = {
-      fixed: 0,
-      wontfix: 0,
-      duplicate: 0,
-      stale: 0,
-      unknown: 0,
-    };
-    const categoryMap = new Map<string, z.infer<typeof categoryBreakdownSchema>>();
-    let openCount = 0;
-    let closedCount = 0;
-    let closedInWindowCount = 0;
-
-    for (const a of issueAnalyses) {
-      typeCounts[a.type] += 1;
-
-      if (a.type === 'Bug') {
-        bugSeverityCounts[a.severity] += 1;
-      }
-
-      if (a.issueState === 'open') openCount += 1;
-      else closedCount += 1;
-
-      if (a.lifecycle === 'closed' || a.lifecycle === 'opened-and-closed') {
-        closedInWindowCount += 1;
-        if (a.closureReason) {
-          resolutionCounts[a.closureReason] += 1;
-        }
-      }
-
-      let bucket = categoryMap.get(a.category);
-      if (!bucket) {
-        bucket = {
-          category: a.category,
-          total: 0,
-          Bug: 0,
-          'Feature Request': 0,
-          Question: 0,
-        };
-        categoryMap.set(a.category, bucket);
-      }
-      bucket.total += 1;
-      bucket[a.type] += 1;
-    }
-
-    const categoryBreakdown = [...categoryMap.values()].sort((a, b) => b.total - a.total);
-    const closedDurations = issueAnalyses
-      .filter(issue => (issue.lifecycle === 'closed' || issue.lifecycle === 'opened-and-closed') && issue.closedAt)
-      .map(issue => daysBetween(issue.createdAt, issue.closedAt!));
-    const closedWithin7Days = closedDurations.filter(days => days <= 7).length;
-    const closedWithin30Days = closedDurations.filter(days => days <= 30).length;
-
+    const rollups = computeIssueRollups(issueAnalyses);
     const summary = {
       openBacklog: metrics.openBacklog,
       issuesOpened: metrics.issuesOpened,
       issuesClosed: metrics.issuesClosed,
       pullRequests: metrics.pullRequests,
       analysisCount: issueAnalyses.length,
-      typeCounts,
-      bugSeverityCounts,
-      issueStatusCounts: {
-        open: openCount,
-        closed: closedCount,
-      },
-      resolutionCounts,
-      closedInWindowCount,
-      categoryBreakdown,
-      operationalHealth: {
-        medianTimeToCloseDays: median(closedDurations),
-        closedWithin7Days,
-        closedWithin30Days,
-      },
+      ...rollups,
       discordSentiment,
     };
 
@@ -1183,33 +1294,7 @@ const analyzeDiscordSentimentStep = createStep({
       { start: new Date(period.start), end: new Date(period.end) },
       logger,
     );
-    const comparison = previousReport
-      ? {
-          backlogDelta: delta(summary.openBacklog, previousReport.summary.openBacklog),
-          issuesOpenedDelta: delta(summary.issuesOpened.total, previousReport.summary.issuesOpened.total),
-          issuesClosedDelta: delta(summary.issuesClosed.total, previousReport.summary.issuesClosed.total),
-          mergedPrDelta: delta(summary.pullRequests.merged, previousReport.summary.pullRequests.merged),
-          analysisCountDelta: delta(summary.analysisCount, previousReport.summary.analysisCount),
-          criticalBugDelta: delta(summary.bugSeverityCounts.CRITICAL, previousReport.summary.bugSeverityCounts.CRITICAL),
-          majorBugDelta: delta(summary.bugSeverityCounts.MAJOR, previousReport.summary.bugSeverityCounts.MAJOR),
-          sentimentChanged:
-            summary.discordSentiment.overall !== previousReport.summary.discordSentiment.overall,
-          sentimentDeltaSummary:
-            summary.discordSentiment.overall === previousReport.summary.discordSentiment.overall
-              ? null
-              : `Discord sentiment moved from ${previousReport.summary.discordSentiment.overall} to ${summary.discordSentiment.overall}.`,
-        }
-      : {
-          backlogDelta: null,
-          issuesOpenedDelta: null,
-          issuesClosedDelta: null,
-          mergedPrDelta: null,
-          analysisCountDelta: null,
-          criticalBugDelta: null,
-          majorBugDelta: null,
-          sentimentChanged: null,
-          sentimentDeltaSummary: null,
-        };
+    const comparison = computeComparison(summary, previousReport);
 
     const takeaways = buildTakeaways({ summary, comparison });
     const actions = buildActions({ issueAnalyses, summary, comparison });
@@ -1231,7 +1316,7 @@ const analyzeDiscordSentimentStep = createStep({
   },
 });
 
-function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefingSchema>): string {
+export function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefingSchema>): string {
   const { period, repo, summary, issueAnalyses, comparison, takeaways, actions } = report;
   const lines: string[] = [];
 
@@ -1317,7 +1402,7 @@ function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefingSchem
     for (const aspect of ds.aspects) {
       const positives = aspect.positives.map((s) => s.headline).join('; ') || 'none';
       const pains = aspect.painPoints
-        .map((p) => `${p.severity}: ${p.headline}`)
+        .map((p) => p.headline)
         .join('; ') || 'none';
       lines.push(`- ${aspect.aspect}: positives — ${positives}; pains — ${pains}`);
     }
@@ -1357,27 +1442,33 @@ function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefingSchem
 
 const generateBriefingStep = createStep({
   id: 'generate-briefing',
-  inputSchema: reportWithoutBriefingSchema,
+  inputSchema: generateBriefingInputSchema,
   outputSchema: reportSchema,
   stateSchema: reportStateSchema,
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
     let briefing: z.infer<typeof briefingSchema> | null = null;
 
+    const { supersedes, correctionsApplied, ...reportFields } = inputData;
+
     try {
-      const payload = formatBriefingPayload(inputData);
+      const payload = formatBriefingPayload(reportFields);
       const result = await briefingAgent.generate(payload, {
         memory: {
           thread: BRIEFING_THREAD_ID,
           resource: BRIEFING_RESOURCE_ID,
         },
         structuredOutput: {
-          schema: briefingSchema,
+          schema: briefingAgentOutputSchema,
           errorStrategy: 'warn',
         },
       });
       if (result.object) {
-        briefing = result.object;
+        briefing = {
+          ...result.object,
+          supersedes: null,
+          correctionsApplied: [],
+        };
       } else {
         logger?.warn('Briefing agent returned no structured object', {
           text: result.text?.slice(0, 200),
@@ -1389,8 +1480,16 @@ const generateBriefingStep = createStep({
       });
     }
 
+    if (briefing && (supersedes || (correctionsApplied && correctionsApplied.length > 0))) {
+      briefing = {
+        ...briefing,
+        supersedes: supersedes ?? null,
+        correctionsApplied: correctionsApplied ?? [],
+      };
+    }
+
     return {
-      ...inputData,
+      ...reportFields,
       briefing,
     };
   },

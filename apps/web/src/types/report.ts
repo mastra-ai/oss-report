@@ -90,8 +90,6 @@ export interface OperationalHealth {
   closedWithin30Days: number;
 }
 
-export type PainSeverity = 'blocker' | 'friction' | 'nit';
-
 export type Aspect =
   | 'agents'
   | 'workflows'
@@ -118,15 +116,11 @@ export interface SentimentSignal {
   messageUrls: string[];
 }
 
-export interface PainPoint extends SentimentSignal {
-  severity: PainSeverity;
-}
-
 export interface AspectBreakdown {
   aspect: Aspect;
   sentiment: AspectSentiment;
   positives: SentimentSignal[];
-  painPoints: PainPoint[];
+  painPoints: SentimentSignal[];
 }
 
 export interface DiscordSentiment {
@@ -161,6 +155,7 @@ export interface IssueAnalysis {
   type: IssueType;
   category: string;
   severity: Severity;
+  correctedAt?: string | null;
 }
 
 export interface ReportPeriod {
@@ -214,6 +209,11 @@ export interface BriefingRecurring {
   note: string | null;
 }
 
+export interface BriefingCorrection {
+  issueNumber: number;
+  changed: Array<'severity' | 'type' | 'summary'>;
+}
+
 export interface Briefing {
   headline: string;
   movement: BriefingMovement;
@@ -222,6 +222,8 @@ export interface Briefing {
   watchlist: BriefingWatch[];
   recurring: BriefingRecurring[];
   talkingPoints: string[];
+  supersedes?: string | null;
+  correctionsApplied?: BriefingCorrection[];
 }
 
 export interface Report {
@@ -244,6 +246,7 @@ export interface ReportIndexEntry {
   comparison: Comparison;
   takeaways: Takeaways;
   briefing: Briefing | null;
+  supersedes?: string | null;
   summary: {
     issuesOpened: IssueCounts;
     issuesClosed: IssueCounts;

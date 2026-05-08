@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { fetchReport } from '@/lib/api';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { fetchReport, rebriefRun, type IssueEdit } from '@/lib/api';
 import type { IssueAnalysis, IssueType, Report } from '@/types/report';
 import { SummaryCards } from '@/components/SummaryCards';
 import { SentimentCard } from '@/components/SentimentCard';
 import { AnalysisStats } from '@/components/AnalysisStats';
 import { CategoryTable } from '@/components/CategoryTable';
-import { IssueCard } from '@/components/IssueCard';
+import { IssueCard, type IssueCardEdit } from '@/components/IssueCard';
 import { ResolutionStats } from '@/components/ResolutionStats';
 import { WeeklyBriefing } from '@/components/WeeklyBriefing';
 import { formatDateTime, formatDateUTC } from '@/lib/utils';
@@ -23,17 +23,23 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 export function ReportPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const presentMode = searchParams.get('present') === '1';
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
+  const [edits, setEdits] = useState<Map<number, IssueCardEdit>>(new Map());
+  const [isRebriefing, setIsRebriefing] = useState(false);
+  const [rebriefError, setRebriefError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     setReport(null);
     setError(null);
+    setEdits(new Map());
+    setRebriefError(null);
     fetchReport(id)
       .then(data => {
         if (!cancelled) setReport(data);
@@ -45,6 +51,39 @@ export function ReportPage() {
       cancelled = true;
     };
   }, [id]);
+
+  const stageEdit = (issueNumber: number, edit: IssueCardEdit) => {
+    setEdits((prev) => {
+      const next = new Map(prev);
+      next.set(issueNumber, edit);
+      return next;
+    });
+  };
+
+  const clearEdit = (issueNumber: number) => {
+    setEdits((prev) => {
+      const next = new Map(prev);
+      next.delete(issueNumber);
+      return next;
+    });
+  };
+
+  const submitRebrief = async () => {
+    if (!id || edits.size === 0) return;
+    setIsRebriefing(true);
+    setRebriefError(null);
+    try {
+      const editList: IssueEdit[] = Array.from(edits.entries()).map(([issueNumber, edit]) => ({
+        issueNumber,
+        ...edit,
+      }));
+      const response = await rebriefRun(id, editList);
+      navigate(`/reports/${response.newRunId}`);
+    } catch (err) {
+      setRebriefError(err instanceof Error ? err.message : String(err));
+      setIsRebriefing(false);
+    }
+  };
 
   const sortedIssues = useMemo<IssueAnalysis[]>(() => {
     if (!report) return [];
@@ -107,6 +146,35 @@ export function ReportPage() {
             />
           )}
 
+          {edits.size > 0 && (
+            <div className="sticky top-2 z-10 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+              <span className="font-medium text-amber-700 dark:text-amber-400">
+                {edits.size} correction{edits.size === 1 ? '' : 's'} pending
+              </span>
+              {rebriefError && (
+                <span className="text-xs text-destructive">{rebriefError}</span>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  onClick={() => setEdits(new Map())}
+                  disabled={isRebriefing}
+                >
+                  Discard all
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-foreground px-3 py-1 text-xs font-medium text-background hover:bg-foreground/90 disabled:opacity-50"
+                  onClick={submitRebrief}
+                  disabled={isRebriefing}
+                >
+                  {isRebriefing ? 'Re-briefing…' : 'Re-brief with corrections'}
+                </button>
+              </div>
+            </div>
+          )}
+
           <SummaryCards report={report} />
 
           <div className="grid gap-6 xl:grid-cols-2">
@@ -156,7 +224,13 @@ export function ReportPage() {
             ) : (
               <div className="divide-y rounded-md border">
                 {sortedIssues.map(issue => (
-                  <IssueCard key={issue.issueNumber} issue={issue} />
+                  <IssueCard
+                    key={issue.issueNumber}
+                    issue={issue}
+                    edit={edits.get(issue.issueNumber)}
+                    onSaveEdit={stageEdit}
+                    onClearEdit={clearEdit}
+                  />
                 ))}
               </div>
             )}

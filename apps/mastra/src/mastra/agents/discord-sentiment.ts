@@ -40,7 +40,7 @@ of this window.
                       | "models" | "auth" | "cli" | "voice" | "community" | "other",
       "sentiment": "positive" | "negative" | "mixed",
       "positives": SignalItem[],
-      "painPoints": PainPointItem[]
+      "painPoints": SignalItem[]
     }
   ]
 }
@@ -52,22 +52,14 @@ SignalItem = {
   "messageIds": ["<id>", ...]   // at least one, pulled from the input
 }
 
-PainPointItem = SignalItem & {
-  "severity": "blocker" | "friction" | "nit"
-}
-
-Severity for pain points:
-- "blocker": prevents shipping, data loss, hard crash, no workaround
-- "friction": slows users down, bad docs, ergonomics rough but workable
-- "nit": minor rough edge, low priority
-
 # Rules
 
 - Pick only aspects that were actually discussed in this window. A typical week will have
   2-5 aspects. If the community only talked about memory and tools, return only those two.
 - "community" is for meta-chatter (launches, hiring, events, vibes). Use sparingly.
 - Merge duplicate/near-duplicate signals. Cap at 5 positives + 5 pain points per aspect.
-- Order pain points by severity (blocker -> friction -> nit) within each aspect.
+- Cite every distinct message that supports a signal. More citations = stronger signal,
+  and the UI will surface signals with more citations first.
 - Order aspects by how much activity they had (most discussed first).
 - Do NOT quote raw chat messages. Paraphrase into analyst voice.
 - If the entire window is genuinely quiet or pleasant, "painPoints" can be empty across

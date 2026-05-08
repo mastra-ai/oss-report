@@ -4,8 +4,6 @@ import type {
   AspectBreakdown,
   AspectSentiment,
   DiscordSentiment,
-  PainPoint,
-  PainSeverity,
   SentimentSignal,
 } from '@/types/report';
 
@@ -90,27 +88,15 @@ const ASPECT_SENTIMENT_TONE: Record<AspectSentiment, string> = {
 };
 
 function AspectRow({ aspect }: { aspect: AspectBreakdown }) {
-  const blockerCount = aspect.painPoints.filter(p => p.severity === 'blocker').length;
-
   return (
     <section className="px-5 py-4">
-      <header className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <div className="flex items-baseline gap-2">
-          <h4 className="text-sm font-semibold">{ASPECT_LABEL[aspect.aspect]}</h4>
-          <span
-            className={`inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium capitalize ${ASPECT_SENTIMENT_TONE[aspect.sentiment]}`}
-          >
-            {aspect.sentiment}
-          </span>
-        </div>
-        <div className="mono text-[11px] text-muted-foreground tabular-nums">
-          {aspect.positives.length}+ · {aspect.painPoints.length}−
-          {blockerCount > 0 && (
-            <span className="ml-1.5 text-destructive">
-              {blockerCount} blocker{blockerCount === 1 ? '' : 's'}
-            </span>
-          )}
-        </div>
+      <header className="mb-3 flex items-baseline gap-2">
+        <h4 className="text-sm font-semibold">{ASPECT_LABEL[aspect.aspect]}</h4>
+        <span
+          className={`inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium capitalize ${ASPECT_SENTIMENT_TONE[aspect.sentiment]}`}
+        >
+          {aspect.sentiment}
+        </span>
       </header>
 
       <div
@@ -191,61 +177,24 @@ function SignalItem({
   );
 }
 
-const SEVERITY_DOT: Record<PainSeverity, string> = {
-  blocker: 'bg-destructive',
-  friction: 'bg-amber-500',
-  nit: 'bg-muted-foreground/40',
-};
-
-const SEVERITY_LABEL: Record<PainSeverity, string> = {
-  blocker: 'Blocker',
-  friction: 'Friction',
-  nit: 'Nit',
-};
-
-const SEVERITY_BADGE: Record<PainSeverity, string> = {
-  blocker: 'border-destructive/30 bg-destructive/5 text-destructive',
-  friction: 'border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400',
-  nit: 'border-border bg-muted text-muted-foreground',
-};
-
-const SEVERITY_ORDER: Record<PainSeverity, number> = {
-  blocker: 0,
-  friction: 1,
-  nit: 2,
-};
-
-function PainColumn({ items }: { items: PainPoint[] }) {
-  const sorted = [...items].sort(
-    (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
-  );
-
+function PainColumn({ items }: { items: SentimentSignal[] }) {
   return (
     <div>
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         Pain points
       </div>
-      {sorted.length === 0 ? (
+      {items.length === 0 ? (
         <div className="text-xs text-muted-foreground">Nothing negative surfaced</div>
       ) : (
         <ul className="space-y-3">
-          {sorted.map((item, i) => (
+          {items.map((item, i) => (
             <li key={i} className="flex gap-2.5">
               <span
-                className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${SEVERITY_DOT[item.severity]}`}
+                className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-destructive"
                 aria-hidden
               />
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="text-sm font-medium leading-snug">
-                    {item.headline}
-                  </span>
-                  <span
-                    className={`inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium ${SEVERITY_BADGE[item.severity]}`}
-                  >
-                    {SEVERITY_LABEL[item.severity]}
-                  </span>
-                </div>
+                <div className="text-sm font-medium leading-snug">{item.headline}</div>
                 {item.detail && (
                   <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
                     {item.detail}

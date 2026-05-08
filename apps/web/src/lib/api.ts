@@ -56,6 +56,7 @@ function reportToIndexEntry(runId: string, report: Report): ReportIndexEntry {
     comparison: report.comparison,
     takeaways: report.takeaways,
     briefing: report.briefing ?? null,
+    supersedes: report.briefing?.supersedes ?? null,
     summary: {
       issuesOpened: report.summary.issuesOpened,
       issuesClosed: report.summary.issuesClosed,
@@ -76,15 +77,21 @@ export async function fetchReportIndex(): Promise<ReportIndexEntry[]> {
   }
 
   const entries: ReportIndexEntry[] = [];
+  const supersededIds = new Set<string>();
   for (const run of response.runs) {
     const snapshot = parseSnapshot(run.snapshot);
     const result = snapshot?.result;
     if (!isReport(result)) continue;
     entries.push(reportToIndexEntry(run.runId, result));
+    const supersedes = result.briefing?.supersedes;
+    if (typeof supersedes === 'string' && supersedes) {
+      supersededIds.add(supersedes);
+    }
   }
 
-  entries.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
-  return entries;
+  const visible = entries.filter((entry) => !supersededIds.has(entry.id));
+  visible.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+  return visible;
 }
 
 export async function startReportRun(params: {
@@ -163,6 +170,56 @@ export async function getRunStatus(runId: string): Promise<RunStatus> {
   } catch (err) {
     wrapError(err, `Failed to load run ${runId}`);
   }
+}
+
+export type IssueEdit = {
+  issueNumber: number;
+  severity?: 'MINOR' | 'MAJOR' | 'CRITICAL';
+  type?: 'Bug' | 'Feature Request' | 'Question';
+  summary?: string;
+};
+
+export interface RebriefResponse {
+  newRunId: string;
+  originalRunId: string;
+  correctionsApplied: Array<{
+    issueNumber: number;
+    changed: Array<'severity' | 'type' | 'summary'>;
+  }>;
+}
+
+export async function rebriefRun(
+  runId: string,
+  edits: IssueEdit[],
+): Promise<RebriefResponse> {
+  const url = `${MASTRA_BASE_URL}/runs/${encodeURIComponent(runId)}/rebrief`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ edits }),
+    });
+  } catch (err) {
+    wrapError(err, 'Failed to submit rebrief');
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      data && typeof data === 'object' && 'error' in data
+        ? String((data as { error: unknown }).error)
+        : `HTTP ${response.status}`;
+    throw new MastraApiError(`Rebrief failed: ${message}`);
+  }
+
+  return data as RebriefResponse;
 }
 
 export async function fetchReport(runId: string): Promise<Report> {
