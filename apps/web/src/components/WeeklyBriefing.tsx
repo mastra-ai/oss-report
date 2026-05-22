@@ -2,7 +2,6 @@ import { AlertTriangle, ArrowRight, CheckCircle2, TrendingDown, TrendingUp } fro
 import { cn, formatNumber } from '@/lib/utils';
 import type {
   Briefing,
-  BriefingMovement,
   BriefingSeverity,
   Comparison,
 } from '@/types/report';
@@ -23,13 +22,6 @@ interface MetricChip {
   icon: typeof TrendingUp;
 }
 
-const movementCopy: Record<BriefingMovement, { label: string; tone: string }> = {
-  improved: { label: 'Improved', tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-  regressed: { label: 'Regressed', tone: 'text-red-700 bg-red-50 border-red-200' },
-  steady: { label: 'Steady', tone: 'text-muted-foreground bg-muted border-border' },
-  mixed: { label: 'Mixed', tone: 'text-amber-700 bg-amber-50 border-amber-200' },
-};
-
 const severityTone: Record<BriefingSeverity, string> = {
   critical: 'text-red-700 bg-red-50 border-red-200',
   major: 'text-amber-700 bg-amber-50 border-amber-200',
@@ -37,7 +29,6 @@ const severityTone: Record<BriefingSeverity, string> = {
 };
 
 export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Props) {
-  const movement = movementCopy[briefing.movement];
   const hasRecurring = briefing.recurring.length > 0;
   const showTalkingPoints = presentMode && briefing.talkingPoints.length > 0;
   const metricChips = buildMetricChips(comparison);
@@ -45,20 +36,13 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
   return (
     <section className="rounded-md border bg-card">
       <header className="border-b px-5 py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Weekly briefing
-            </div>
-            <h2 className="mt-1 text-xl font-semibold leading-snug tracking-tight">
-              {briefing.headline}
-            </h2>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Weekly briefing
           </div>
-          <span
-            className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${movement.tone}`}
-          >
-            {movement.label}
-          </span>
+          <h2 className="mt-1 text-xl font-semibold leading-snug tracking-tight">
+            {briefing.headline}
+          </h2>
         </div>
         {metricChips.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -92,9 +76,6 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
             {briefing.recurring.map((item, i) => (
               <li key={i} className="leading-snug">
                 <span>{item.text}</span>
-                {item.note && (
-                  <span className="ml-1.5 text-xs text-muted-foreground">— {item.note}</span>
-                )}
               </li>
             ))}
           </ul>

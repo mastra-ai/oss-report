@@ -86,7 +86,6 @@ const operationalHealthSchema = z.object({
   closedWithin30Days: z.number(),
 });
 
-const briefingMovementEnum = z.enum(['improved', 'regressed', 'steady', 'mixed']);
 const briefingSeverityEnum = z.enum(['critical', 'major', 'minor']);
 
 const briefingWinSchema = z.object({
@@ -107,7 +106,6 @@ const briefingWatchSchema = z.object({
 
 const briefingRecurringSchema = z.object({
   text: z.string(),
-  note: z.string().nullable(),
 });
 
 const briefingCorrectionSchema = z.object({
@@ -117,7 +115,6 @@ const briefingCorrectionSchema = z.object({
 
 export const briefingAgentOutputSchema = z.object({
   headline: z.string(),
-  movement: briefingMovementEnum,
   wins: z.array(briefingWinSchema),
   regressions: z.array(briefingRegressionSchema),
   watchlist: z.array(briefingWatchSchema),
@@ -1006,57 +1003,134 @@ const analysisOutputSchema = z.object({
     ),
 });
 
+const discordThreadMessageSchema = z.object({
+  id: z.string(),
+  author: z.string(),
+  createdAt: z.string(),
+  content: z.string(),
+  url: z.string(),
+});
+
+const issueContextSchema = issueCandidateSchema.extend({
+  fetched: z.object({
+    source: z.enum(['discord-thread', 'github-only']),
+    thread: z
+      .object({
+        threadName: z.string(),
+        threadUrl: z.string(),
+        messages: z.array(discordThreadMessageSchema),
+      })
+      .nullable(),
+    threadFetchError: z.string().nullable(),
+    githubComments: z.array(
+      z.object({
+        author: z.string(),
+        createdAt: z.string(),
+        body: z.string(),
+      }),
+    ),
+    githubCommentsTail: z.boolean(),
+  }),
+});
+
+const fetchIssueContextStep = createStep({
+  id: 'fetch-issue-context',
+  inputSchema: issueCandidateSchema,
+  outputSchema: issueContextSchema,
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+
+    let source: 'discord-thread' | 'github-only' = 'github-only';
+    let thread: z.infer<typeof issueContextSchema>['fetched']['thread'] = null;
+    let threadFetchError: string | null = null;
+
+    if (inputData.threadId) {
+      try {
+        const fetched = await fetchThreadMessages(inputData.threadId, MAX_THREAD_MESSAGES);
+        if (fetched.messages.length > 0) {
+          source = 'discord-thread';
+          thread = {
+            threadName: fetched.threadName,
+            threadUrl: fetched.threadUrl,
+            messages: fetched.messages,
+          };
+        }
+      } catch (error) {
+        threadFetchError = error instanceof Error ? error.message : String(error);
+        logger?.warn?.(
+          `Failed to fetch Discord thread for #${inputData.issueNumber}: ${threadFetchError}`,
+        );
+      }
+    }
+
+    let githubComments: Array<{ author: string; createdAt: string; body: string }> = [];
+    const githubCommentsTail = inputData.issueState === 'closed';
+    if (source === 'github-only' && inputData.commentCount > 0) {
+      try {
+        const { owner, repo } = getReportRepo();
+        githubComments = await fetchIssueComments(
+          owner,
+          repo,
+          inputData.issueNumber,
+          30,
+          { tail: githubCommentsTail },
+        );
+      } catch (error) {
+        logger?.warn?.(
+          `Failed to fetch GitHub comments for #${inputData.issueNumber}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    return {
+      ...inputData,
+      fetched: {
+        source,
+        thread,
+        threadFetchError,
+        githubComments,
+        githubCommentsTail,
+      },
+    };
+  },
+});
+
 const analyzeIssueStep = createStep({
   id: 'analyze-issue',
-  inputSchema: issueCandidateSchema,
+  inputSchema: issueContextSchema,
   outputSchema: issueAnalysisSchema.nullable(),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
 
     try {
+      const { fetched } = inputData;
       let contextSection: string;
       let threadUrl: string | null = null;
       let threadMessageCount = 0;
-      let source: 'discord-thread' | 'github-only' = 'github-only';
 
       if (inputData.threadId) {
-        try {
-          const thread = await fetchThreadMessages(inputData.threadId, MAX_THREAD_MESSAGES);
-          if (thread.messages.length > 0) {
-            threadUrl = thread.threadUrl;
-            threadMessageCount = thread.messages.length;
-            source = 'discord-thread';
-            contextSection = `Discord thread: ${thread.threadName}
+        if (fetched.thread) {
+          threadUrl = fetched.thread.threadUrl;
+          threadMessageCount = fetched.thread.messages.length;
+          contextSection = `Discord thread: ${fetched.thread.threadName}
 Discord thread messages:
-${thread.messages
+${fetched.thread.messages
   .map(message => `[${message.createdAt}] ${message.author}: ${message.content}`)
   .join('\n')}`;
-          } else {
-            contextSection = 'Discord thread linked but has no messages.';
-          }
-        } catch (error) {
-          logger?.warn?.(
-            `Failed to fetch Discord thread for #${inputData.issueNumber}: ${error instanceof Error ? error.message : String(error)}`,
-          );
+        } else if (fetched.threadFetchError) {
           contextSection = 'Discord thread linked but could not be fetched.';
+        } else {
+          contextSection = 'Discord thread linked but has no messages.';
         }
       } else {
         contextSection = 'No Discord thread linked.';
       }
 
-      if (source === 'github-only' && inputData.commentCount > 0) {
-        const { owner, repo } = getReportRepo();
-        // For closed issues, the closing signal (merged PR reference, maintainer
-        // "fixed in X", duplicate pointer) is at the TAIL of the comment list.
-        // For open issues, the early comments carry the triage/repro context.
-        const tail = inputData.issueState === 'closed';
-        const comments = await fetchIssueComments(owner, repo, inputData.issueNumber, 30, { tail });
-        if (comments.length > 0) {
-          const label = tail ? 'Last GitHub comments' : 'GitHub comments';
-          contextSection += `\n\n${label}:\n${comments
-            .map(c => `[${c.createdAt}] ${c.author}: ${c.body}`)
-            .join('\n')}`;
-        }
+      if (fetched.source === 'github-only' && fetched.githubComments.length > 0) {
+        const label = fetched.githubCommentsTail ? 'Last GitHub comments' : 'GitHub comments';
+        contextSection += `\n\n${label}:\n${fetched.githubComments
+          .map(c => `[${c.createdAt}] ${c.author}: ${c.body}`)
+          .join('\n')}`;
       }
 
       const lifecycleLine =
@@ -1117,7 +1191,7 @@ ${contextSection}`,
         labels: inputData.labels,
         threadUrl,
         threadMessageCount,
-        source,
+        source: fetched.source,
         summary: analysis.object.summary,
         type: analysis.object.type,
         category: analysis.object.category.toLowerCase().trim() || 'other',
@@ -1134,6 +1208,15 @@ ${contextSection}`,
   },
 });
 
+const analyzeIssueWorkflow = createWorkflow({
+  id: 'analyze-issue-with-context',
+  inputSchema: issueCandidateSchema,
+  outputSchema: issueAnalysisSchema.nullable(),
+})
+  .then(fetchIssueContextStep)
+  .then(analyzeIssueStep)
+  .commit();
+
 const reportDraftSchema = z.object({
   issueAnalyses: z.array(issueAnalysisSchema),
 });
@@ -1147,14 +1230,93 @@ const collectIssueAnalysesStep = createStep({
   }),
 });
 
+const discordGeneralMessageSchema = z.object({
+  id: z.string(),
+  authorId: z.string(),
+  authorUsername: z.string(),
+  authorBot: z.boolean(),
+  createdAt: z.string(),
+  content: z.string(),
+  url: z.string(),
+});
+
+const reportDraftWithDiscordSchema = reportDraftSchema.extend({
+  discordRaw: z.object({
+    channelId: z.string().nullable(),
+    channelName: z.string().nullable(),
+    messages: z.array(discordGeneralMessageSchema),
+  }),
+});
+
+const fetchDiscordMessagesStep = createStep({
+  id: 'fetch-discord-messages',
+  inputSchema: reportDraftSchema,
+  outputSchema: reportDraftWithDiscordSchema,
+  stateSchema: reportStateSchema,
+  execute: async ({ inputData, state, mastra }) => {
+    const { period, config } = requireReportState(state);
+    const logger = mastra?.getLogger();
+
+    if (!config.generalChannelId) {
+      return {
+        ...inputData,
+        discordRaw: { channelId: null, channelName: null, messages: [] },
+      };
+    }
+
+    const windowStart = new Date(period.start);
+    const windowEnd = new Date(period.end);
+
+    try {
+      const generalMessages = await fetchMessagesInWindow(
+        config.generalChannelId,
+        windowStart,
+        windowEnd,
+        MAX_GENERAL_MESSAGES,
+      );
+      const channelName = await getChannelName(config.generalChannelId);
+
+      return {
+        ...inputData,
+        discordRaw: {
+          channelId: config.generalChannelId,
+          channelName,
+          messages: generalMessages.map(message => ({
+            id: message.id,
+            authorId: message.author.id,
+            authorUsername: message.author.username,
+            authorBot: message.author.bot,
+            createdAt: message.createdAt.toISOString(),
+            content: message.content,
+            url: message.url,
+          })),
+        },
+      };
+    } catch (error) {
+      logger?.warn?.(
+        `Failed to fetch Discord messages: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return {
+        ...inputData,
+        discordRaw: {
+          channelId: config.generalChannelId,
+          channelName: null,
+          messages: [],
+        },
+      };
+    }
+  },
+});
+
 const analyzeDiscordSentimentStep = createStep({
   id: 'analyze-discord-sentiment',
-  inputSchema: reportDraftSchema,
+  inputSchema: reportDraftWithDiscordSchema,
   outputSchema: reportWithoutBriefingSchema,
   stateSchema: reportStateSchema,
   execute: async ({ inputData, state, mastra }) => {
     const { repo, period, config, metrics } = requireReportState(state);
     const issueAnalyses = inputData.issueAnalyses;
+    const { discordRaw } = inputData;
     const logger = mastra?.getLogger();
 
     // ---- Discord sentiment ----
@@ -1166,20 +1328,15 @@ const analyzeDiscordSentimentStep = createStep({
       messageCount: 0,
       uniqueAuthorCount: 0,
       channelId: config.generalChannelId,
-      channelName: null,
+      channelName: discordRaw.channelName,
     };
 
     if (config.generalChannelId) {
       const windowStart = new Date(period.start);
       const windowEnd = new Date(period.end);
-      const generalMessages = await fetchMessagesInWindow(
-        config.generalChannelId,
-        windowStart,
-        windowEnd,
-        MAX_GENERAL_MESSAGES,
-      );
-      const channelName = await getChannelName(config.generalChannelId);
-      const uniqueAuthors = new Set(generalMessages.map(m => m.author.id)).size;
+      const generalMessages = discordRaw.messages;
+      const channelName = discordRaw.channelName;
+      const uniqueAuthors = new Set(generalMessages.map(m => m.authorId)).size;
 
       // Build ID → URL map for hydration after the LLM responds.
       const urlById = new Map<string, string>();
@@ -1202,7 +1359,7 @@ const analyzeDiscordSentimentStep = createStep({
         const messageBlock = generalMessages
           .map(
             message =>
-              `[id=${message.id}] ${message.createdAt.toISOString()} ${message.author.username}: ${message.content}`,
+              `[id=${message.id}] ${message.createdAt} ${message.authorUsername}: ${message.content}`,
           )
           .join('\n');
 
@@ -1500,8 +1657,9 @@ export const ossReportWorkflow = createWorkflow({
   .then(resolveReportContextStep)
   .then(collectRepoMetricsStep)
   .then(collectIssueCandidatesStep)
-  .foreach(analyzeIssueStep, { concurrency: ISSUE_ANALYSIS_CONCURRENCY })
+  .foreach(analyzeIssueWorkflow, { concurrency: ISSUE_ANALYSIS_CONCURRENCY })
   .then(collectIssueAnalysesStep)
+  .then(fetchDiscordMessagesStep)
   .then(analyzeDiscordSentimentStep)
   .then(generateBriefingStep)
   .commit();

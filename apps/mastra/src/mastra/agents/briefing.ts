@@ -67,11 +67,6 @@ export const briefingAgent = new Agent({
       when supported by prior-week observations or earlier weekly user
       messages on this thread.
 
-    - movement: one of "improved" | "regressed" | "steady" | "mixed".
-      Compare to your prior-week understanding, not to a fixed baseline. If
-      you have no prior-week evidence, base movement on this week's data
-      alone (typically "steady" or "mixed").
-
     - wins: 1-3 short bullets about what got better. Each item has:
       - text: a concrete sentence (≤ 25 words)
       - evidence: optional, a short fact backing it ("12 memory bugs fixed", "PR #14821 merged")
@@ -91,25 +86,29 @@ export const briefingAgent = new Agent({
     - recurring: items that have genuinely persisted across multiple recent
       weekly reports. Each:
         - text: short description of the recurring pain/topic (≤ 20 words)
-        - note: optional one-liner about trajectory ("worsening", "easing",
-          "steady", "back after a quiet week"), only when supported by prior
-          weekly evidence
-      Hard rules for "recurring":
-        • A topic qualifies ONLY if you can point to evidence in your prior-
-          week observations OR in earlier weekly user messages on this thread
-          (identified by their "# Weekly OSS report — period ..." header).
-          The current week's payload is new evidence and is NEVER on its own a
-          basis for recurrence.
-        • If your observations contain no prior weekly briefings AND there are
-          no earlier weekly user messages on this thread, return an empty
-          array. Do not infer recurrence from a single week of data, even if
-          it spans multiple categories or aspects.
-        • Do not estimate or report a recurrence count. The schema does not
-          ask for one.
-        • Hallucinated recurrence is a worse error than an empty list. When in
-          doubt, leave it empty.
-        • Do NOT repeat items already in "regressions" or "watchlist" — if it
-          belongs in "recurring", prefer here.
+      Hard rules for "recurring" — read carefully:
+        • A topic qualifies ONLY if it appears in AT LEAST TWO PRIOR weekly
+          reports. Evidence comes from your prior-week observations or from
+          earlier weekly user messages on this thread (identified by their
+          "# Weekly OSS report — period ..." header). The CURRENT week's
+          payload is new evidence and is NEVER on its own a basis for
+          recurrence.
+        • If you have fewer than two prior weekly reports available — count
+          them in your observations and the user-message history — return
+          an empty array. One prior week is not enough.
+        • Do NOT use trajectory language ("worsening", "easing", "back after
+          a quiet week"). The schema only asks for a topic description; the
+          reader can compare across reports themselves.
+        • NO OVERLAP with "regressions" or "watchlist". Before adding an
+          item here, scan the regressions and watchlist arrays you are
+          producing in this same response. If the topic is already covered
+          there (even paraphrased), DO NOT also list it under recurring.
+          Pick the single best home for each topic: recurring if its main
+          point is "this has been a theme for weeks", watchlist if it is
+          "monitor this going forward", regressions if it visibly worsened
+          this week.
+        • Aim for 0-3 items. Hallucinated or duplicated recurrence is a
+          worse error than an empty list. When in doubt, leave it empty.
 
     - talkingPoints: 3-5 ordered bullets, written in spoken-presentation voice
       (short sentences, no markdown, no jargon, no numbers in parens). This is
@@ -125,8 +124,8 @@ export const briefingAgent = new Agent({
     - Never fabricate issue numbers, PR references, or quote text.
     - If you have no prior-week observations and no earlier weekly user
       messages on this thread, leave "recurring" empty and do not invent
-      history. Headline and movement should also avoid recurrence framing in
-      that case.
+      history. The headline should also avoid recurrence framing in that
+      case.
   `,
   model: 'openrouter/openai/gpt-5.4',
   memory: briefingMemory,

@@ -185,7 +185,6 @@ export interface ReportSummary {
   discordSentiment: DiscordSentiment;
 }
 
-export type BriefingMovement = 'improved' | 'regressed' | 'steady' | 'mixed';
 export type BriefingSeverity = 'critical' | 'major' | 'minor';
 
 export interface BriefingWin {
@@ -206,7 +205,6 @@ export interface BriefingWatch {
 
 export interface BriefingRecurring {
   text: string;
-  note: string | null;
 }
 
 export interface BriefingCorrection {
@@ -216,7 +214,6 @@ export interface BriefingCorrection {
 
 export interface Briefing {
   headline: string;
-  movement: BriefingMovement;
   wins: BriefingWin[];
   regressions: BriefingRegression[];
   watchlist: BriefingWatch[];
