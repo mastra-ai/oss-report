@@ -1,9 +1,37 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { SentimentBadge } from '@/components/SentimentBadge';
+import { deleteRun } from '@/lib/api';
 import { cn, formatDateUTC, formatNumber, formatRelative } from '@/lib/utils';
 import type { ReportIndexEntry } from '@/types/report';
 
-export function ReportListItem({ entry }: { entry: ReportIndexEntry }) {
+export function ReportListItem({
+  entry,
+  onDeleted,
+}: {
+  entry: ReportIndexEntry;
+  onDeleted?: () => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const label = `${formatDateUTC(entry.period.start)} → ${formatDateUTC(entry.period.end)}`;
+    if (!window.confirm(`Delete the report for ${label}? This cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteRun(entry.id);
+      onDeleted?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDeleting(false);
+    }
+  }
   const totalBugs =
     entry.summary.bugSeverityCounts.CRITICAL +
     entry.summary.bugSeverityCounts.MAJOR +
@@ -17,11 +45,12 @@ export function ReportListItem({ entry }: { entry: ReportIndexEntry }) {
     null;
 
   return (
-    <Link
-      to={`/reports/${entry.id}`}
-      className="group flex items-center justify-between gap-6 p-5 transition-colors hover:bg-muted/50"
-    >
-      <div className="min-w-0">
+    <div className="group relative flex items-stretch transition-colors hover:bg-muted/50">
+      <Link
+        to={`/reports/${entry.id}`}
+        className="flex flex-1 items-center justify-between gap-6 p-5"
+      >
+        <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium tracking-tight group-hover:text-foreground">
             {formatDateUTC(entry.period.start)}
@@ -70,11 +99,43 @@ export function ReportListItem({ entry }: { entry: ReportIndexEntry }) {
         </div>
         {preview && <p className="mt-2 line-clamp-1 text-sm text-muted-foreground">{preview}</p>}
       </div>
-      <div className="flex shrink-0 items-center gap-3">
-        <SentimentBadge sentiment={entry.summary.discordSentiment} />
-        <span className="text-muted-foreground transition-colors group-hover:text-foreground">→</span>
-      </div>
-    </Link>
+        <div className="flex shrink-0 items-center gap-3">
+          <SentimentBadge sentiment={entry.summary.discordSentiment} />
+          <span className="text-muted-foreground transition-colors group-hover:text-foreground">→</span>
+        </div>
+      </Link>
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={deleting}
+        aria-label="Delete report"
+        title={error ?? 'Delete report'}
+        className={cn(
+          'absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100',
+          deleting && 'opacity-100',
+          error && 'text-destructive opacity-100',
+        )}
+      >
+        {deleting ? (
+          <span className="h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
+        ) : (
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-3.5 w-3.5"
+          >
+            <path d="M3 6h18" />
+            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          </svg>
+        )}
+      </button>
+    </div>
   );
 }
 

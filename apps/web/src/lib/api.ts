@@ -165,6 +165,14 @@ export async function getRunStatus(runId: string): Promise<RunStatus> {
   }
 }
 
+export async function deleteRun(runId: string): Promise<void> {
+  try {
+    await ossReportWorkflow.deleteRunById(runId);
+  } catch (err) {
+    wrapError(err, `Failed to delete run ${runId}`);
+  }
+}
+
 export type IssueEdit = {
   issueNumber: number;
   severity?: 'MINOR' | 'MAJOR' | 'CRITICAL';

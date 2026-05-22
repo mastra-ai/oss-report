@@ -26,6 +26,14 @@ export function HomePage() {
     return load();
   }, [load]);
 
+  const handleDeleted = useCallback(
+    (id: string) => {
+      setEntries(current => current?.filter(e => e.id !== id) ?? null);
+      load();
+    },
+    [load],
+  );
+
   return (
     <div className="space-y-8">
       <section>
@@ -66,7 +74,11 @@ export function HomePage() {
       {entries && entries.length > 0 && (
         <div className="divide-y divide-border rounded-md border">
           {entries.map(entry => (
-            <ReportListItem key={entry.id} entry={entry} />
+            <ReportListItem
+              key={entry.id}
+              entry={entry}
+              onDeleted={() => handleDeleted(entry.id)}
+            />
           ))}
         </div>
       )}
