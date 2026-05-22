@@ -1218,7 +1218,7 @@ const collectIssueAnalysesStep = createStep({
   }),
 });
 
-const discordGeneralMessageSchema = z.object({
+const discordReplySchema = z.object({
   id: z.string(),
   authorId: z.string(),
   authorUsername: z.string(),
@@ -1226,6 +1226,13 @@ const discordGeneralMessageSchema = z.object({
   createdAt: z.string(),
   content: z.string(),
   url: z.string(),
+});
+
+const discordGeneralMessageSchema = discordReplySchema.extend({
+  threadId: z.string().nullable(),
+  threadName: z.string().nullable(),
+  threadUrl: z.string().nullable(),
+  replies: z.array(discordReplySchema),
 });
 
 const reportDraftWithDiscordSchema = reportDraftSchema.extend({
@@ -1269,15 +1276,7 @@ const fetchDiscordMessagesStep = createStep({
         discordRaw: {
           channelId: config.generalChannelId,
           channelName,
-          messages: generalMessages.map(message => ({
-            id: message.id,
-            authorId: message.author.id,
-            authorUsername: message.author.username,
-            authorBot: message.author.bot,
-            createdAt: message.createdAt.toISOString(),
-            content: message.content,
-            url: message.url,
-          })),
+          messages: generalMessages,
         },
       };
     } catch (error) {
@@ -1324,13 +1323,22 @@ const analyzeDiscordSentimentStep = createStep({
       const windowEnd = new Date(period.end);
       const generalMessages = discordRaw.messages;
       const channelName = discordRaw.channelName;
-      const uniqueAuthors = new Set(generalMessages.map(m => m.authorId)).size;
 
-      // Build ID → URL map for hydration after the LLM responds.
+      // Build ID → URL map (includes thread replies so the agent can cite them too).
       const urlById = new Map<string, string>();
+      const authorIds = new Set<string>();
+      let totalMessages = 0;
       for (const message of generalMessages) {
         urlById.set(message.id, message.url);
+        authorIds.add(message.authorId);
+        totalMessages += 1;
+        for (const reply of message.replies) {
+          urlById.set(reply.id, reply.url);
+          authorIds.add(reply.authorId);
+          totalMessages += 1;
+        }
       }
+      const uniqueAuthors = authorIds.size;
 
       if (generalMessages.length) {
         // Fetch previous report for week-over-week context.
@@ -1344,14 +1352,25 @@ const analyzeDiscordSentimentStep = createStep({
           ? `# Previous window summary (${previousSummary.period})\n${previousSummary.text}\n\n`
           : '';
 
-        const messageBlock = generalMessages
-          .map(
-            message =>
-              `[id=${message.id}] ${message.createdAt} ${message.authorUsername}: ${message.content}`,
-          )
-          .join('\n');
+        // Render each top-level message as a conversation block, with thread
+        // replies indented under their parent so the agent sees Q+A together.
+        const conversationBlock = generalMessages
+          .map(message => {
+            const head = `[id=${message.id}] ${message.createdAt} ${message.authorUsername}: ${message.content}`;
+            if (!message.replies.length) {
+              return head;
+            }
+            const repliesBlock = message.replies
+              .map(
+                reply =>
+                  `  ↳ [id=${reply.id}] ${reply.createdAt} ${reply.authorUsername}: ${reply.content}`,
+              )
+              .join('\n');
+            return `${head}\n${repliesBlock}`;
+          })
+          .join('\n\n');
 
-        const prompt = `${previousBlock}# Current window\nChannel: #${channelName}\nWindow: ${windowStart.toISOString()} → ${windowEnd.toISOString()}\nMessage count: ${generalMessages.length}\nUnique authors: ${uniqueAuthors}\n\n# Messages\n${messageBlock}`;
+        const prompt = `${previousBlock}# Current window\nChannel: #${channelName}\nWindow: ${windowStart.toISOString()} → ${windowEnd.toISOString()}\nTop-level messages: ${generalMessages.length}\nTotal messages (incl. thread replies): ${totalMessages}\nUnique authors: ${uniqueAuthors}\n\n# Conversations\nEach block is one top-level message followed by any replies in its Discord thread (prefixed with "↳"). Treat a block as a single conversation when judging whether something was answered.\n\n${conversationBlock}`;
 
         const sentiment = await discordSentimentAgent.generate(prompt, {
           structuredOutput: {
@@ -1406,7 +1425,7 @@ const analyzeDiscordSentimentStep = createStep({
               .map(hydrate)
               .sort((x, y) => y.messageIds.length - x.messageIds.length),
           })),
-          messageCount: generalMessages.length,
+          messageCount: totalMessages,
           uniqueAuthorCount: uniqueAuthors,
           channelId: config.generalChannelId,
           channelName,
