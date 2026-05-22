@@ -50,11 +50,6 @@ const categoryBreakdownSchema = z.object({
   Question: z.number(),
 });
 
-const issueStatusCountsSchema = z.object({
-  open: z.number(),
-  closed: z.number(),
-});
-
 const comparisonSchema = z.object({
   backlogDelta: z.number().nullable(),
   issuesOpenedDelta: z.number().nullable(),
@@ -216,7 +211,6 @@ export const reportSummarySchema = z.object({
   analysisCount: z.number(),
   typeCounts: typeCountsSchema,
   bugSeverityCounts: severityCountsSchema,
-  issueStatusCounts: issueStatusCountsSchema,
   resolutionCounts: resolutionCountsSchema,
   closedInWindowCount: z.number(),
   categoryBreakdown: z.array(categoryBreakdownSchema),
@@ -482,8 +476,6 @@ export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisS
     unknown: 0,
   };
   const categoryMap = new Map<string, z.infer<typeof categoryBreakdownSchema>>();
-  let openCount = 0;
-  let closedCount = 0;
   let closedInWindowCount = 0;
 
   for (const a of issueAnalyses) {
@@ -492,9 +484,6 @@ export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisS
     if (a.type === 'Bug') {
       bugSeverityCounts[a.severity] += 1;
     }
-
-    if (a.issueState === 'open') openCount += 1;
-    else closedCount += 1;
 
     if (a.lifecycle === 'closed' || a.lifecycle === 'opened-and-closed') {
       closedInWindowCount += 1;
@@ -528,7 +517,6 @@ export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisS
   return {
     typeCounts,
     bugSeverityCounts,
-    issueStatusCounts: { open: openCount, closed: closedCount },
     resolutionCounts,
     closedInWindowCount,
     categoryBreakdown,
@@ -1499,8 +1487,6 @@ export function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefi
   lines.push(`By type — Bug ${t.Bug}, Feature ${t['Feature Request']}, Question ${t.Question}`);
   const sev = summary.bugSeverityCounts;
   lines.push(`Bug severity — Critical ${sev.CRITICAL}, Major ${sev.MAJOR}, Minor ${sev.MINOR}`);
-  const status = summary.issueStatusCounts;
-  lines.push(`Status — Open ${status.open}, Closed ${status.closed}`);
   const res = summary.resolutionCounts;
   lines.push(
     `Closed in window: ${summary.closedInWindowCount} (fixed ${res.fixed}, wontfix ${res.wontfix}, duplicate ${res.duplicate}, stale ${res.stale}, unknown ${res.unknown})`,

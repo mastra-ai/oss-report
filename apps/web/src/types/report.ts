@@ -54,11 +54,6 @@ export interface CategoryBreakdown {
   Question: number;
 }
 
-export interface IssueStatusCounts {
-  open: number;
-  closed: number;
-}
-
 export interface Comparison {
   backlogDelta: number | null;
   issuesOpenedDelta: number | null;
@@ -177,7 +172,6 @@ export interface ReportSummary {
   analysisCount: number;
   typeCounts: TypeCounts;
   bugSeverityCounts: SeverityCounts;
-  issueStatusCounts: IssueStatusCounts;
   resolutionCounts: ResolutionCounts;
   closedInWindowCount: number;
   categoryBreakdown: CategoryBreakdown[];
