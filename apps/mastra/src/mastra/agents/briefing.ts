@@ -1,38 +1,4 @@
 import { Agent } from '@mastra/core/agent';
-import { Memory } from '@mastra/memory';
-
-export const BRIEFING_RESOURCE_ID = 'briefing-agent';
-export const BRIEFING_THREAD_ID = 'oss-report-weekly-briefing';
-
-const briefingMemory = new Memory({
-  options: {
-    observationalMemory: {
-      model: 'openrouter/google/gemini-2.5-flash',
-      temporalMarkers: true,
-      retrieval: true,
-      // observation: {
-      //   instruction: `
-      //     Capture project-health signals from each weekly OSS report:
-      //     - Persistent pain points (with first-seen and recent-recurrence weeks)
-      //     - Categories trending up or down across weeks (memory, agents, workflows, deployer, etc.)
-      //     - Notable resolutions and shipped fixes
-      //     - Open watchlist items (CRITICAL bugs, aging MAJOR bugs, recurring user-side confusion)
-      //     - Sentiment shifts over time
-      //     Do NOT capture transient details like individual issue titles unless they recur.
-      //     Anchor observations to the period label so the agent can reason about "N weeks ago".
-      //   `,
-      // },
-      // reflection: {
-      //   instruction: `
-      //     When consolidating, group related project-health signals together by area
-      //     (memory, deployer, agents, workflows, sentiment, etc.) and preserve the
-      //     temporal anchors. Mark issues that have persisted across multiple weeks.
-      //     Drop signals that haven't appeared in 4+ consecutive weekly reports.
-      //   `,
-      // },
-    },
-  },
-});
 
 export const briefingAgent = new Agent({
   id: 'briefing-agent',
@@ -43,29 +9,17 @@ export const briefingAgent = new Agent({
     The user message contains this week's report as structured markdown. Each
     weekly user message starts with a header of the form:
         # Weekly OSS report — period YYYY-MM-DD → YYYY-MM-DD
-    That header is the canonical boundary between weeks. Use it (and your
-    accumulated observations from prior weeks) to tell weeks apart when
-    reasoning about trajectory.
 
-    Your accumulated observations from prior weeks give you the project's
-    trajectory — use them to write a briefing that a maintainer can read aloud
-    in five minutes during a team sync.
-
-    BEFORE drafting the briefing, consult your prior-week observations and, if
-    needed, page back through earlier weekly user messages on this thread using
-    the recall tool. If a pain point, category, sentiment aspect, or watchlist
-    item has appeared in any of the last 3 weekly reports, treat it as
-    recurring and surface it in the "recurring" field below.
+    Write a briefing that a maintainer can read aloud in five minutes during a
+    team sync. Base every claim on this week's payload — the deterministic
+    deltas, severity counts, top issues, and Discord sentiment it contains.
 
     Return a structured object with these fields:
 
     - headline: ONE sentence, ≤ 20 words, the single most important thing about
       this week. If nothing notable happened, say so plainly. Examples:
-      "Memory regressions cleared and deployer pain returned for a third week."
+      "Memory regressions cleared and deployer pain returned this week."
       "Quiet week, no major regressions, sentiment still mixed."
-      Recurrence framing ("third week of …", "back again") is allowed ONLY
-      when supported by prior-week observations or earlier weekly user
-      messages on this thread.
 
     - wins: 1-3 short bullets about what got better. Each item has:
       - text: a concrete sentence (≤ 25 words)
@@ -80,47 +34,30 @@ export const briefingAgent = new Agent({
 
     - watchlist: 1-3 items the team should keep an eye on, with:
       - text: what to watch
-      - why: why it matters (recurrence count, blocker status, age)
-      Use prior-week observations to surface persistent issues.
+      - why: why it matters (blocker status, age, citation count)
 
-    - recurring: items that have genuinely persisted across multiple recent
-      weekly reports. Each:
-        - text: short description of the recurring pain/topic (≤ 20 words)
-      Hard rules for "recurring" — read carefully. Apply them as a two-step
-      gate, IN ORDER:
-        • STEP 1 (primary gate — prior weeks): Start from your prior-week
-          observations and earlier weekly user messages on this thread
-          (identified by their "# Weekly OSS report — period ..." header).
-          A topic is a CANDIDATE only if it appears in AT LEAST TWO PRIOR
-          weekly reports. Do NOT start from the current week's payload and
-          work backwards — that produces false positives. If a theme is fresh
-          this week and was not already a theme in two or more prior weeks, it
-          is NOT recurring, no matter how prominent it is right now.
-        • STEP 2 (secondary filter — current-week anchor): For each candidate
-          that passed Step 1, keep it ONLY if it ALSO has concrete evidence in
-          the CURRENT week's payload (a relevant issue, a category with a
-          non-zero count, or a Discord pain point / aspect this week). Drop
-          candidates with no current-week signal — a long-standing theme that
-          went quiet this week is NOT recurring this week.
-        • Both steps must pass. Prior weeks alone (went quiet now) → drop.
-          Current week alone (fresh topic) → drop. Only the intersection
-          survives.
-        • If you have fewer than two prior weekly reports available — count
-          them in your observations and the user-message history — return
-          an empty array. One prior week is not enough.
-        • Do NOT use trajectory language ("worsening", "easing", "back after
-          a quiet week"). The schema only asks for a topic description; the
-          reader can compare across reports themselves.
-        • NO OVERLAP with "regressions" or "watchlist". Before adding an
-          item here, scan the regressions and watchlist arrays you are
-          producing in this same response. If the topic is already covered
-          there (even paraphrased), DO NOT also list it under recurring.
-          Pick the single best home for each topic: recurring if its main
-          point is "this has been a theme for weeks", watchlist if it is
-          "monitor this going forward", regressions if it visibly worsened
-          this week.
-        • Aim for 0-3 items. Hallucinated or duplicated recurrence is a
-          worse error than an empty list. When in doubt, leave it empty.
+    - recurring: The "## Recurring (pre-qualified — allow-list)" section of the
+      payload lists clusters that were computed DETERMINISTICALLY in code — each
+      one already appeared in ≥2 distinct prior weeks AND this week. This list
+      is authoritative.
+        • Output EXACTLY one recurring entry per cluster in that section — no
+          more, no fewer. If the section says "None this week.", return an
+          empty array.
+        • Do NOT add, infer, or remove recurring items. Never promote a
+          current-week topic to recurring on your own; if it is not in the
+          pre-qualified list, it is not recurring.
+        • For each entry, preserve the cluster's source and identity:
+          - source: "github" or "discord", matching the [GITHUB]/[DISCORD] tag.
+          - issueNumber / issueUrl: set from the cited issue for github clusters
+            (null for discord).
+          - aspect: set the Discord aspect for discord clusters (null for github).
+          - text: a short description (≤ 20 words) of the recurring pain/topic.
+        • weeksSeen and related prior-week signals are attached by code from
+          the cluster — you do not need to emit them.
+        • Do NOT use trajectory language ("worsening", "easing", "back after a
+          quiet week"). Just describe the topic.
+        • Prefer NOT to duplicate a recurring topic verbatim in regressions or
+          watchlist — pick the single best home for each topic.
 
     - talkingPoints: 3-5 ordered bullets, written in spoken-presentation voice
       (short sentences, no markdown, no jargon, no numbers in parens). This is
@@ -129,16 +66,9 @@ export const briefingAgent = new Agent({
 
     Rules:
     - Be honest about quiet weeks. "No major regression" is a valid headline.
-    - Use prior-week context to call out persistence ("third week of deployer pain"),
-      not just current-week numbers.
     - Reference deterministic comparison data from the report (deltas, severity
       counts) over your own counting.
     - Never fabricate issue numbers, PR references, or quote text.
-    - If you have no prior-week observations and no earlier weekly user
-      messages on this thread, leave "recurring" empty and do not invent
-      history. The headline should also avoid recurrence framing in that
-      case.
   `,
   model: 'openrouter/openai/gpt-5.4',
-  memory: briefingMemory,
 });

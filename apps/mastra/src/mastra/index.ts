@@ -83,6 +83,7 @@ export const mastra = new Mastra({
             issueAnalyses?: unknown;
             summary?: unknown;
             period?: { start: string; end: string };
+            signalEmbeddings?: Record<string, number[]>;
           };
           if (!Array.isArray(original.issueAnalyses) || !original.summary || !original.period) {
             return c.json({ error: 'run snapshot missing report data' }, 500);
@@ -129,6 +130,7 @@ export const mastra = new Mastra({
             actions: editedActions,
             summary: editedSummary,
             issueAnalyses: editedAnalyses,
+            signalEmbeddings: original.signalEmbeddings ?? {},
             correctionsApplied: applied,
           };
 

@@ -1,7 +1,9 @@
-import { AlertTriangle, ArrowRight, CheckCircle2, TrendingDown, TrendingUp } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, MessagesSquare, TrendingDown, TrendingUp } from 'lucide-react';
 import { cn, formatNumber } from '@/lib/utils';
 import type {
   Briefing,
+  BriefingRecurring,
   BriefingSeverity,
   Comparison,
 } from '@/types/report';
@@ -72,11 +74,9 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
           <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Recurring
           </h3>
-          <ul className="mt-2 space-y-2 text-sm">
+          <ul className="mt-2 space-y-3 text-sm">
             {briefing.recurring.map((item, i) => (
-              <li key={i} className="leading-snug">
-                <span>{item.text}</span>
-              </li>
+              <RecurringItem key={i} item={item} />
             ))}
           </ul>
         </div>
@@ -175,6 +175,84 @@ function Column({
         </ul>
       )}
     </div>
+  );
+}
+
+function RecurringItem({ item }: { item: BriefingRecurring }) {
+  const [open, setOpen] = useState(false);
+  const related = item.relatedSignals ?? [];
+  return (
+    <li className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 leading-snug">
+        {item.source === 'github' && item.issueUrl ? (
+          <a
+            href={item.issueUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            #{item.issueNumber}
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+            <MessagesSquare className="h-3 w-3" />
+            {item.aspect ?? 'discord'}
+          </span>
+        )}
+        <span className="flex-1">{item.text}</span>
+        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
+          seen {item.weeksSeen} weeks
+        </span>
+      </div>
+      {related.length > 0 && (
+        <div className="mt-1.5">
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ChevronDown
+              className={cn('h-3 w-3 transition-transform', open && 'rotate-180')}
+            />
+            Also seen in {related.length} prior signal{related.length === 1 ? '' : 's'}
+          </button>
+          {open && (
+            <ul className="mt-1.5 space-y-1 border-l border-border/60 pl-3 text-xs">
+              {related.map((r, i) => (
+                <li key={i} className="flex flex-wrap items-baseline gap-x-2">
+                  {r.url ? (
+                    <a
+                      href={r.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-1 text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      {r.source === 'discord' && (
+                        <MessagesSquare className="mr-1 inline h-3 w-3" />
+                      )}
+                      {r.label}
+                    </a>
+                  ) : (
+                    <span className="flex-1 text-muted-foreground">
+                      {r.source === 'discord' && (
+                        <MessagesSquare className="mr-1 inline h-3 w-3" />
+                      )}
+                      {r.label}
+                    </span>
+                  )}
+                  <span className="text-muted-foreground/70">
+                    {new Date(r.periodEnd).toLocaleDateString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 

@@ -197,8 +197,21 @@ export interface BriefingWatch {
   why: string;
 }
 
+export interface BriefingRelatedSignal {
+  source: 'github' | 'discord';
+  label: string;
+  url: string | null;
+  periodEnd: string;
+}
+
 export interface BriefingRecurring {
   text: string;
+  source: 'github' | 'discord';
+  issueNumber: number | null;
+  issueUrl: string | null;
+  aspect: string | null;
+  weeksSeen: number;
+  relatedSignals: BriefingRelatedSignal[];
 }
 
 export interface BriefingCorrection {

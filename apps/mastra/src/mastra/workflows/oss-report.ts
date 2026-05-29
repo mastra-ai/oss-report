@@ -1,9 +1,10 @@
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { z } from 'zod';
-import { BRIEFING_RESOURCE_ID, BRIEFING_THREAD_ID, briefingAgent } from '../agents/briefing';
+import { briefingAgent } from '../agents/briefing';
 import { discordSentimentAgent } from '../agents/discord-sentiment';
 import { issueThreadAnalysisAgent } from '../agents/issue-thread-analysis';
 import { fetchMessagesInWindow, fetchThreadMessages, getChannelName } from '../shared/discord';
+import { cosineSimilarity, embedTexts } from '../shared/embeddings';
 import {
   extractDiscordThreadId,
   fetchIssueComments,
@@ -12,6 +13,10 @@ import {
 } from '../shared/github';
 
 const ISSUE_ANALYSIS_CONCURRENCY = 5;
+const RECURRING_LOOKBACK_WEEKS = 6;
+const RECURRING_SIMILARITY_THRESHOLD = Number(
+  process.env.OSS_REPORT_RECURRING_THRESHOLD ?? 0.82,
+);
 const MAX_GENERAL_MESSAGES = Number(process.env.OSS_REPORT_MAX_GENERAL_MESSAGES ?? 200);
 const MAX_THREAD_MESSAGES = Number(process.env.OSS_REPORT_MAX_THREAD_MESSAGES ?? 50);
 
@@ -99,8 +104,27 @@ const briefingWatchSchema = z.object({
   why: z.string(),
 });
 
-const briefingRecurringSchema = z.object({
+const briefingRelatedSignalSchema = z.object({
+  source: z.enum(['github', 'discord']),
+  label: z.string(),
+  url: z.string().nullable(),
+  periodEnd: z.string(),
+});
+
+// Shape the agent emits. Code authoritatively rewrites the recurring list
+// after the agent call, attaching weeksSeen and relatedSignals from the
+// deterministic clusters. The agent only phrases the cluster.
+const briefingRecurringAgentSchema = z.object({
   text: z.string(),
+  source: z.enum(['github', 'discord']),
+  issueNumber: z.number().nullable(),
+  issueUrl: z.string().nullable(),
+  aspect: z.string().nullable(),
+});
+
+const briefingRecurringSchema = briefingRecurringAgentSchema.extend({
+  weeksSeen: z.number(),
+  relatedSignals: z.array(briefingRelatedSignalSchema),
 });
 
 const briefingCorrectionSchema = z.object({
@@ -113,11 +137,12 @@ export const briefingAgentOutputSchema = z.object({
   wins: z.array(briefingWinSchema),
   regressions: z.array(briefingRegressionSchema),
   watchlist: z.array(briefingWatchSchema),
-  recurring: z.array(briefingRecurringSchema),
+  recurring: z.array(briefingRecurringAgentSchema),
   talkingPoints: z.array(z.string()),
 });
 
 export const briefingSchema = briefingAgentOutputSchema.extend({
+  recurring: z.array(briefingRecurringSchema),
   correctionsApplied: z.array(briefingCorrectionSchema).optional(),
 });
 
@@ -234,6 +259,7 @@ export const reportWithoutBriefingSchema = z.object({
   actions: actionsSchema,
   summary: reportSummarySchema,
   issueAnalyses: z.array(issueAnalysisSchema),
+  signalEmbeddings: z.record(z.string(), z.array(z.number())),
 });
 
 export const generateBriefingInputSchema = reportWithoutBriefingSchema.extend({
@@ -448,6 +474,222 @@ export async function loadPreviousReport(
     logger?.warn?.(`Failed to load previous report context: ${String(error)}`);
     return null;
   }
+}
+
+// ---- Recurring-theme detection (deterministic, embedding-based) ----
+
+export type SignalSource = 'github' | 'discord';
+
+export interface WeekSignal {
+  signalId: string;
+  source: SignalSource;
+  text: string;
+  label: string;
+  url: string | null;
+  // github only
+  issueNumber?: number;
+  category?: string;
+  // discord only
+  aspect?: string;
+}
+
+/**
+ * Turn a stored report into the flat pool of "signals" that can recur:
+ * GitHub issue analyses and Discord pain points. Positives are excluded —
+ * recurring is about persistent problems.
+ */
+export function extractWeekSignals(
+  report: Pick<z.infer<typeof reportWithoutBriefingSchema>, 'issueAnalyses' | 'summary'>,
+): WeekSignal[] {
+  const signals: WeekSignal[] = [];
+
+  for (const issue of report.issueAnalyses) {
+    signals.push({
+      signalId: `gh:${issue.issueNumber}`,
+      source: 'github',
+      text: `${issue.issueTitle}\n${issue.summary}`,
+      label: `#${issue.issueNumber} ${issue.issueTitle}`,
+      url: issue.issueUrl,
+      issueNumber: issue.issueNumber,
+      category: issue.category,
+    });
+  }
+
+  for (const aspect of report.summary.discordSentiment.aspects) {
+    aspect.painPoints.forEach((pain, index) => {
+      signals.push({
+        signalId: `dc:${aspect.aspect}:${index}`,
+        source: 'discord',
+        text: `${pain.headline}\n${pain.detail ?? ''}`.trim(),
+        label: `${aspect.aspect}: ${pain.headline}`,
+        url: pain.messageUrls[0] ?? null,
+        aspect: aspect.aspect,
+      });
+    });
+  }
+
+  return signals;
+}
+
+export interface RecentWeek {
+  periodEnd: string;
+  signals: WeekSignal[];
+  embeddings: Record<string, number[]>;
+}
+
+/**
+ * Load the last N successful reports before the current period (most recent
+ * first, current period excluded), deduped against overlapping re-runs. Each
+ * week carries its signal pool and the cached signal embeddings persisted in
+ * the run snapshot, so prior weeks never need re-embedding.
+ */
+export async function loadRecentReports(
+  mastra: { getWorkflow?: (id: string) => unknown } | undefined,
+  currentPeriod: { start: Date; end: Date },
+  limit: number,
+  logger?: { info?: (message: string) => void; warn?: (message: string) => void },
+): Promise<RecentWeek[]> {
+  try {
+    const workflow = mastra?.getWorkflow?.('ossReportWorkflow') as
+      | { listWorkflowRuns?: (args: unknown) => Promise<{ runs: Array<{ snapshot?: unknown; createdAt?: string }> }> }
+      | undefined;
+    if (!workflow?.listWorkflowRuns) return [];
+
+    const { runs } = await workflow.listWorkflowRuns({
+      status: 'success',
+      perPage: 50,
+      page: 0,
+    });
+
+    const currentStart = currentPeriod.start.getTime();
+    const currentEnd = currentPeriod.end.getTime();
+
+    const candidates = (runs ?? [])
+      .map(run => {
+        const snapshot = parseRunSnapshot(run.snapshot);
+        const result = snapshot?.result as z.infer<typeof reportSchema> | undefined;
+        const createdAt = run.createdAt ? new Date(run.createdAt).getTime() : 0;
+        return { result, createdAt };
+      })
+      .filter((entry): entry is { result: z.infer<typeof reportSchema>; createdAt: number } => {
+        const result = entry.result;
+        if (!result?.period?.start || !result.period.end || !result.summary?.discordSentiment) return false;
+
+        const previousStart = new Date(result.period.start).getTime();
+        const previousEnd = new Date(result.period.end).getTime();
+
+        if (Number.isNaN(previousStart) || Number.isNaN(previousEnd)) return false;
+        if (previousStart === currentStart && previousEnd === currentEnd) return false;
+
+        return previousEnd < currentEnd;
+      })
+      .sort((a, b) => {
+        const endDiff = new Date(b.result.period.end).getTime() - new Date(a.result.period.end).getTime();
+        if (endDiff !== 0) return endDiff;
+        return b.createdAt - a.createdAt;
+      });
+
+    // Collapse overlapping prior periods to a single representative, preferring
+    // the most recently created run (so a rebriefed week supersedes its stale
+    // original and is never double-counted as two distinct weeks).
+    const deduped: Array<{ result: z.infer<typeof reportSchema>; createdAt: number }> = [];
+    for (const entry of candidates) {
+      const start = new Date(entry.result.period.start).getTime();
+      const end = new Date(entry.result.period.end).getTime();
+      const overlapIndex = deduped.findIndex(kept => {
+        const keptStart = new Date(kept.result.period.start).getTime();
+        const keptEnd = new Date(kept.result.period.end).getTime();
+        return start < keptEnd && keptStart < end;
+      });
+      if (overlapIndex === -1) {
+        deduped.push(entry);
+      } else if (entry.createdAt > deduped[overlapIndex].createdAt) {
+        deduped[overlapIndex] = entry;
+      }
+    }
+
+    return deduped.slice(0, limit).map(entry => ({
+      periodEnd: entry.result.period.end,
+      signals: extractWeekSignals(entry.result),
+      embeddings: entry.result.signalEmbeddings ?? {},
+    }));
+  } catch (error) {
+    logger?.warn?.(`Failed to load recent reports: ${String(error)}`);
+    return [];
+  }
+}
+
+export interface RecurringCluster {
+  currentSignal: { id: string; source: SignalSource; label: string; url: string | null };
+  weeksSeen: number;
+  priorWeeks: string[];
+  relatedSignals: Array<{ source: SignalSource; label: string; url: string | null; periodEnd: string }>;
+  theme: string;
+  // convenience fields for the briefing payload / schema
+  issueNumber?: number;
+  issueUrl?: string;
+  aspect?: string;
+}
+
+/**
+ * Deterministic recurring gate. For each current-week signal, match it against
+ * every prior-week signal by cosine similarity. A signal qualifies as recurring
+ * only when its matches span >= 2 distinct prior weeks (cross-source allowed).
+ * Returns one cluster per qualifying current-week signal.
+ */
+export function computeRecurringClusters(
+  currentSignals: WeekSignal[],
+  currentEmbeddings: Record<string, number[]>,
+  priorWeeks: RecentWeek[],
+  threshold: number,
+): RecurringCluster[] {
+  const clusters: RecurringCluster[] = [];
+
+  for (const signal of currentSignals) {
+    const vector = currentEmbeddings[signal.signalId];
+    if (!vector) continue;
+
+    const matchedWeeks = new Set<string>();
+    const relatedSignals: RecurringCluster['relatedSignals'] = [];
+
+    for (const week of priorWeeks) {
+      let weekMatched = false;
+      for (const prior of week.signals) {
+        const priorVector = week.embeddings[prior.signalId];
+        if (!priorVector) continue;
+        if (cosineSimilarity(vector, priorVector) >= threshold) {
+          weekMatched = true;
+          relatedSignals.push({
+            source: prior.source,
+            label: prior.label,
+            url: prior.url,
+            periodEnd: week.periodEnd,
+          });
+        }
+      }
+      if (weekMatched) matchedWeeks.add(week.periodEnd);
+    }
+
+    if (matchedWeeks.size >= 2) {
+      clusters.push({
+        currentSignal: {
+          id: signal.signalId,
+          source: signal.source,
+          label: signal.label,
+          url: signal.url,
+        },
+        weeksSeen: matchedWeeks.size + 1,
+        priorWeeks: [...matchedWeeks].sort(),
+        relatedSignals,
+        theme: signal.label,
+        issueNumber: signal.issueNumber,
+        issueUrl: signal.source === 'github' ? signal.url ?? undefined : undefined,
+        aspect: signal.aspect,
+      });
+    }
+  }
+
+  return clusters;
 }
 
 async function loadPreviousSentimentContext(
@@ -840,7 +1082,7 @@ const collectRepoMetricsStep = createStep({
         `repo:${owner}/${repo} is:issue is:closed label:discord closed:${startDate}..${endDate}`,
         logger,
       ),
-      searchCount(`repo:${owner}/${repo} is:issue is:open`, logger),
+      searchCount(`repo:${owner}/${repo} is:issue created:<=${endDate} -closed:<=${endDate}`, logger),
       searchCount(`repo:${owner}/${repo} is:pr created:${startDate}..${endDate}`, logger),
       searchCount(`repo:${owner}/${repo} is:pr is:merged merged:${startDate}..${endDate}`, logger),
     ]);
@@ -1491,6 +1733,19 @@ const analyzeDiscordSentimentStep = createStep({
     const takeaways = buildTakeaways({ summary, comparison });
     const actions = buildActions({ issueAnalyses, summary, comparison });
 
+    const signals = extractWeekSignals({ issueAnalyses, summary });
+    const signalEmbeddings: Record<string, number[]> = {};
+    if (signals.length > 0) {
+      try {
+        const vectors = await embedTexts(signals.map(s => s.text));
+        signals.forEach((signal, index) => {
+          signalEmbeddings[signal.signalId] = vectors[index];
+        });
+      } catch (error) {
+        logger?.warn?.(`Failed to embed week signals: ${String(error)}`);
+      }
+    }
+
     return {
       generatedAt: new Date().toISOString(),
       repo,
@@ -1504,11 +1759,15 @@ const analyzeDiscordSentimentStep = createStep({
       actions,
       summary,
       issueAnalyses,
+      signalEmbeddings,
     };
   },
 });
 
-export function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefingSchema>): string {
+export function formatBriefingPayload(
+  report: z.infer<typeof reportWithoutBriefingSchema>,
+  recurringClusters: RecurringCluster[] = [],
+): string {
   const { period, repo, summary, issueAnalyses, comparison, takeaways, actions } = report;
   const lines: string[] = [];
 
@@ -1626,6 +1885,26 @@ export function formatBriefingPayload(report: z.infer<typeof reportWithoutBriefi
     lines.push(`Docs attention: ${actions.needsDocsAttention.join(' | ')}`);
   if (actions.recurringPainAreas.length)
     lines.push(`Recurring pain: ${actions.recurringPainAreas.join(' | ')}`);
+  lines.push('');
+
+  lines.push('## Recurring (pre-qualified — allow-list)');
+  lines.push(
+    'These clusters were computed deterministically: each appeared in >=2 distinct prior weeks AND this week. Output EXACTLY one recurring entry per cluster below — do not add, infer, or remove items.',
+  );
+  if (recurringClusters.length === 0) {
+    lines.push('None this week.');
+  } else {
+    for (const cluster of recurringClusters) {
+      const sourceTag = cluster.currentSignal.source === 'github' ? 'GITHUB' : 'DISCORD';
+      const related = cluster.relatedSignals
+        .map((r) => `${r.label} (${r.periodEnd})`)
+        .join('; ');
+      lines.push(
+        `- [${sourceTag}] ${cluster.currentSignal.label} — seen ${cluster.weeksSeen} weeks (prior: ${cluster.priorWeeks.join(', ')})`,
+      );
+      lines.push(`  related: ${related || 'none'}`);
+    }
+  }
 
   return lines.join('\n');
 }
@@ -1641,21 +1920,42 @@ const generateBriefingStep = createStep({
 
     const { correctionsApplied, ...reportFields } = inputData;
 
+    // Deterministic recurring gate: cluster this week's signals against the
+    // last N stored weeks. Only clusters spanning >=2 prior weeks + this week
+    // qualify, and they form a strict allow-list for the agent.
+    const currentSignals = extractWeekSignals(reportFields);
+    const priorWeeks = await loadRecentReports(
+      mastra,
+      { start: new Date(reportFields.period.start), end: new Date(reportFields.period.end) },
+      RECURRING_LOOKBACK_WEEKS,
+      logger,
+    );
+    const recurringClusters = computeRecurringClusters(
+      currentSignals,
+      reportFields.signalEmbeddings,
+      priorWeeks,
+      RECURRING_SIMILARITY_THRESHOLD,
+    );
+    const allowedClusterIds = new Set(recurringClusters.map((c) => c.currentSignal.id));
+
     try {
-      const payload = formatBriefingPayload(reportFields);
+      const payload = formatBriefingPayload(reportFields, recurringClusters);
       const result = await briefingAgent.generate(payload, {
-        memory: {
-          thread: BRIEFING_THREAD_ID,
-          resource: BRIEFING_RESOURCE_ID,
-        },
         structuredOutput: {
           schema: briefingAgentOutputSchema,
           errorStrategy: 'warn',
         },
       });
       if (result.object) {
+        // Agent emits the minimal recurring shape; code fills weeksSeen and
+        // relatedSignals from the qualified clusters in the block below.
         briefing = {
           ...result.object,
+          recurring: result.object.recurring.map((item) => ({
+            ...item,
+            weeksSeen: 0,
+            relatedSignals: [],
+          })),
           correctionsApplied: [],
         };
       } else {
@@ -1667,6 +1967,40 @@ const generateBriefingStep = createStep({
       logger?.error('Briefing generation failed', {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+
+    // Code is authoritative: replace the agent's recurring list with one entry
+    // per qualified cluster, keeping the agent's phrasing where it cited the
+    // right cluster and falling back to the deterministic label otherwise.
+    if (briefing) {
+      const phrasingById = new Map<string, string>();
+      for (const item of briefing.recurring) {
+        const matchId =
+          item.source === 'github' && item.issueNumber != null
+            ? `gh:${item.issueNumber}`
+            : null;
+        if (matchId && allowedClusterIds.has(matchId)) {
+          phrasingById.set(matchId, item.text);
+        }
+      }
+
+      briefing = {
+        ...briefing,
+        recurring: recurringClusters.map((cluster) => ({
+          text: phrasingById.get(cluster.currentSignal.id) ?? cluster.theme,
+          source: cluster.currentSignal.source,
+          issueNumber: cluster.issueNumber ?? null,
+          issueUrl: cluster.issueUrl ?? null,
+          aspect: cluster.aspect ?? null,
+          weeksSeen: cluster.weeksSeen,
+          relatedSignals: cluster.relatedSignals.map((r) => ({
+            source: r.source,
+            label: r.label,
+            url: r.url,
+            periodEnd: r.periodEnd,
+          })),
+        })),
+      };
     }
 
     if (briefing && correctionsApplied && correctionsApplied.length > 0) {
