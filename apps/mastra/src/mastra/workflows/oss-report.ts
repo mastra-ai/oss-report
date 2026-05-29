@@ -393,27 +393,57 @@ export async function loadPreviousReport(
       page: 0,
     });
 
+    const currentStart = currentPeriod.start.getTime();
+    const currentEnd = currentPeriod.end.getTime();
+
     const candidates = (runs ?? [])
       .map(run => {
         const snapshot = parseRunSnapshot(run.snapshot);
-        return snapshot?.result as z.infer<typeof reportSchema> | undefined;
+        const result = snapshot?.result as z.infer<typeof reportSchema> | undefined;
+        const createdAt = run.createdAt ? new Date(run.createdAt).getTime() : 0;
+        return { result, createdAt };
       })
-      .filter((result): result is z.infer<typeof reportSchema> => {
+      .filter((entry): entry is { result: z.infer<typeof reportSchema>; createdAt: number } => {
+        const result = entry.result;
         if (!result?.period?.start || !result.period.end || !result.summary?.discordSentiment) return false;
 
         const previousStart = new Date(result.period.start).getTime();
         const previousEnd = new Date(result.period.end).getTime();
-        const currentStart = currentPeriod.start.getTime();
-        const currentEnd = currentPeriod.end.getTime();
 
         if (Number.isNaN(previousStart) || Number.isNaN(previousEnd)) return false;
         if (previousStart === currentStart && previousEnd === currentEnd) return false;
 
         return previousEnd < currentEnd;
       })
-      .sort((a, b) => new Date(b.period.end).getTime() - new Date(a.period.end).getTime());
+      // Most recent period first; break ties by most recently created run so
+      // re-runs and rebriefs supersede stale originals covering the same week.
+      .sort((a, b) => {
+        const endDiff = new Date(b.result.period.end).getTime() - new Date(a.result.period.end).getTime();
+        if (endDiff !== 0) return endDiff;
+        return b.createdAt - a.createdAt;
+      });
 
-    return candidates[0] ?? null;
+    // Collapse overlapping prior periods (e.g. May 14→20 and May 14→21) to a
+    // single representative, preferring the most recently created run. This
+    // avoids comparing against a stale duplicate whose counts were never
+    // corrected.
+    const deduped: Array<{ result: z.infer<typeof reportSchema>; createdAt: number }> = [];
+    for (const entry of candidates) {
+      const start = new Date(entry.result.period.start).getTime();
+      const end = new Date(entry.result.period.end).getTime();
+      const overlapIndex = deduped.findIndex(kept => {
+        const keptStart = new Date(kept.result.period.start).getTime();
+        const keptEnd = new Date(kept.result.period.end).getTime();
+        return start < keptEnd && keptStart < end;
+      });
+      if (overlapIndex === -1) {
+        deduped.push(entry);
+      } else if (entry.createdAt > deduped[overlapIndex].createdAt) {
+        deduped[overlapIndex] = entry;
+      }
+    }
+
+    return deduped[0]?.result ?? null;
   } catch (error) {
     logger?.warn?.(`Failed to load previous report context: ${String(error)}`);
     return null;

@@ -44,6 +44,7 @@ export const mastra = new Mastra({
     level: 'info',
   }),
   server: {
+    port: 4115,
     apiRoutes: [
       registerApiRoute('/runs/:runId/rebrief', {
         method: 'POST',

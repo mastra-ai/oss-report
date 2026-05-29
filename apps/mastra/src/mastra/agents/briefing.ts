@@ -86,13 +86,25 @@ export const briefingAgent = new Agent({
     - recurring: items that have genuinely persisted across multiple recent
       weekly reports. Each:
         - text: short description of the recurring pain/topic (≤ 20 words)
-      Hard rules for "recurring" — read carefully:
-        • A topic qualifies ONLY if it appears in AT LEAST TWO PRIOR weekly
-          reports. Evidence comes from your prior-week observations or from
-          earlier weekly user messages on this thread (identified by their
-          "# Weekly OSS report — period ..." header). The CURRENT week's
-          payload is new evidence and is NEVER on its own a basis for
-          recurrence.
+      Hard rules for "recurring" — read carefully. Apply them as a two-step
+      gate, IN ORDER:
+        • STEP 1 (primary gate — prior weeks): Start from your prior-week
+          observations and earlier weekly user messages on this thread
+          (identified by their "# Weekly OSS report — period ..." header).
+          A topic is a CANDIDATE only if it appears in AT LEAST TWO PRIOR
+          weekly reports. Do NOT start from the current week's payload and
+          work backwards — that produces false positives. If a theme is fresh
+          this week and was not already a theme in two or more prior weeks, it
+          is NOT recurring, no matter how prominent it is right now.
+        • STEP 2 (secondary filter — current-week anchor): For each candidate
+          that passed Step 1, keep it ONLY if it ALSO has concrete evidence in
+          the CURRENT week's payload (a relevant issue, a category with a
+          non-zero count, or a Discord pain point / aspect this week). Drop
+          candidates with no current-week signal — a long-standing theme that
+          went quiet this week is NOT recurring this week.
+        • Both steps must pass. Prior weeks alone (went quiet now) → drop.
+          Current week alone (fresh topic) → drop. Only the intersection
+          survives.
         • If you have fewer than two prior weekly reports available — count
           them in your observations and the user-message history — return
           an empty array. One prior week is not enough.
