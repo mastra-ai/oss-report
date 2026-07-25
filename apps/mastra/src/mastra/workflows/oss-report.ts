@@ -138,11 +138,13 @@ export const briefingAgentOutputSchema = z.object({
   regressions: z.array(briefingRegressionSchema),
   watchlist: z.array(briefingWatchSchema),
   recurring: z.array(briefingRecurringAgentSchema),
+  recurringRequests: z.array(briefingRecurringAgentSchema),
   talkingPoints: z.array(z.string()),
 });
 
 export const briefingSchema = briefingAgentOutputSchema.extend({
   recurring: z.array(briefingRecurringSchema),
+  recurringRequests: z.array(briefingRecurringSchema),
   correctionsApplied: z.array(briefingCorrectionSchema).optional(),
 });
 
@@ -177,11 +179,17 @@ const sentimentSignalSchema = z.object({
   messageUrls: z.array(z.string()),
 });
 
+const painPointSchema = sentimentSignalSchema.extend({
+  // 'pain' = current friction with existing functionality
+  // 'request' = wishing for new functionality / feature ask
+  kind: z.enum(['pain', 'request']),
+});
+
 const aspectSentimentSchema = z.object({
   aspect: aspectEnum,
   sentiment: z.enum(['positive', 'negative', 'mixed']),
   positives: z.array(sentimentSignalSchema),
-  painPoints: z.array(sentimentSignalSchema),
+  painPoints: z.array(painPointSchema),
 });
 
 const discordSentimentSchema = z.object({
@@ -479,10 +487,12 @@ export async function loadPreviousReport(
 // ---- Recurring-theme detection (deterministic, embedding-based) ----
 
 export type SignalSource = 'github' | 'discord';
+export type SignalKind = 'pain' | 'request';
 
 export interface WeekSignal {
   signalId: string;
   source: SignalSource;
+  kind: SignalKind;
   text: string;
   label: string;
   url: string | null;
@@ -496,7 +506,8 @@ export interface WeekSignal {
 /**
  * Turn a stored report into the flat pool of "signals" that can recur:
  * GitHub issue analyses and Discord pain points. Positives are excluded —
- * recurring is about persistent problems.
+ * recurring is about persistent problems or persistent feature asks. Each
+ * signal carries a `kind` so pains and requests can be clustered separately.
  */
 export function extractWeekSignals(
   report: Pick<z.infer<typeof reportWithoutBriefingSchema>, 'issueAnalyses' | 'summary'>,
@@ -504,9 +515,13 @@ export function extractWeekSignals(
   const signals: WeekSignal[] = [];
 
   for (const issue of report.issueAnalyses) {
+    // Recurring is about persistent open problems. Skip issues that were closed
+    // (in any prior or current week), so resolved work doesn't keep surfacing.
+    if (issue.lifecycle !== 'opened') continue;
     signals.push({
       signalId: `gh:${issue.issueNumber}`,
       source: 'github',
+      kind: issue.type === 'Feature Request' ? 'request' : 'pain',
       text: `${issue.issueTitle}\n${issue.summary}`,
       label: `#${issue.issueNumber} ${issue.issueTitle}`,
       url: issue.issueUrl,
@@ -520,6 +535,7 @@ export function extractWeekSignals(
       signals.push({
         signalId: `dc:${aspect.aspect}:${index}`,
         source: 'discord',
+        kind: pain.kind ?? 'pain',
         text: `${pain.headline}\n${pain.detail ?? ''}`.trim(),
         label: `${aspect.aspect}: ${pain.headline}`,
         url: pain.messageUrls[0] ?? null,
@@ -633,17 +649,19 @@ export interface RecurringCluster {
 
 /**
  * Deterministic recurring gate. For each current-week signal, match it against
- * every prior-week signal by cosine similarity. A signal qualifies as recurring
- * only when its matches span >= 2 distinct prior weeks (cross-source allowed).
- * Returns one cluster per qualifying current-week signal.
+ * every prior-week signal **of the same kind** by cosine similarity. A signal
+ * qualifies as recurring only when its matches span >= 2 distinct prior weeks
+ * (cross-source allowed within the same kind). Returns one cluster per
+ * qualifying current-week signal, separated by kind.
  */
 export function computeRecurringClusters(
   currentSignals: WeekSignal[],
   currentEmbeddings: Record<string, number[]>,
   priorWeeks: RecentWeek[],
   threshold: number,
-): RecurringCluster[] {
-  const clusters: RecurringCluster[] = [];
+): { pains: RecurringCluster[]; requests: RecurringCluster[] } {
+  const pains: RecurringCluster[] = [];
+  const requests: RecurringCluster[] = [];
 
   for (const signal of currentSignals) {
     const vector = currentEmbeddings[signal.signalId];
@@ -655,6 +673,10 @@ export function computeRecurringClusters(
     for (const week of priorWeeks) {
       let weekMatched = false;
       for (const prior of week.signals) {
+        if (prior.kind !== signal.kind) continue;
+        // Skip self-match: a single issue persisting across weeks is not the
+        // same as a recurring theme. Recurring needs distinct signal ids.
+        if (prior.signalId === signal.signalId) continue;
         const priorVector = week.embeddings[prior.signalId];
         if (!priorVector) continue;
         if (cosineSimilarity(vector, priorVector) >= threshold) {
@@ -671,7 +693,7 @@ export function computeRecurringClusters(
     }
 
     if (matchedWeeks.size >= 2) {
-      clusters.push({
+      const cluster: RecurringCluster = {
         currentSignal: {
           id: signal.signalId,
           source: signal.source,
@@ -685,11 +707,12 @@ export function computeRecurringClusters(
         issueNumber: signal.issueNumber,
         issueUrl: signal.source === 'github' ? signal.url ?? undefined : undefined,
         aspect: signal.aspect,
-      });
+      };
+      (signal.kind === 'request' ? requests : pains).push(cluster);
     }
   }
 
-  return clusters;
+  return { pains, requests };
 }
 
 async function loadPreviousSentimentContext(
@@ -748,20 +771,18 @@ export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisS
     unknown: 0,
   };
   const categoryMap = new Map<string, z.infer<typeof categoryBreakdownSchema>>();
+  const newIssueAnalyses = issueAnalyses.filter(
+    issue => issue.lifecycle === 'opened' || issue.lifecycle === 'opened-and-closed',
+  );
   let closedInWindowCount = 0;
 
-  for (const a of issueAnalyses) {
+  // Intake composition only describes issues created during this report window.
+  // Older issues closed during the window belong in resolution metrics instead.
+  for (const a of newIssueAnalyses) {
     typeCounts[a.type] += 1;
 
     if (a.type === 'Bug') {
       bugSeverityCounts[a.severity] += 1;
-    }
-
-    if (a.lifecycle === 'closed' || a.lifecycle === 'opened-and-closed') {
-      closedInWindowCount += 1;
-      if (a.closureReason) {
-        resolutionCounts[a.closureReason] += 1;
-      }
     }
 
     let bucket = categoryMap.get(a.category);
@@ -779,6 +800,15 @@ export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisS
     bucket[a.type] += 1;
   }
 
+  for (const a of issueAnalyses) {
+    if (a.lifecycle === 'closed' || a.lifecycle === 'opened-and-closed') {
+      closedInWindowCount += 1;
+      if (a.closureReason) {
+        resolutionCounts[a.closureReason] += 1;
+      }
+    }
+  }
+
   const categoryBreakdown = [...categoryMap.values()].sort((a, b) => b.total - a.total);
   const closedDurations = issueAnalyses
     .filter(issue => (issue.lifecycle === 'closed' || issue.lifecycle === 'opened-and-closed') && issue.closedAt)
@@ -787,6 +817,7 @@ export function computeIssueRollups(issueAnalyses: z.infer<typeof issueAnalysisS
   const closedWithin30Days = closedDurations.filter(days => days <= 30).length;
 
   return {
+    analysisCount: newIssueAnalyses.length,
     typeCounts,
     bugSeverityCounts,
     resolutionCounts,
@@ -1415,7 +1446,6 @@ State: ${inputData.issueState}
 ${lifecycleLine}
 ${closedLine}
 ${stateReasonLine}
-Labels: ${inputData.labels.join(', ') || 'none'}
 
 Issue body:
 ${inputData.body || 'No body'}
@@ -1666,6 +1696,7 @@ const analyzeDiscordSentimentStep = createStep({
                       headline: z.string(),
                       detail: z.string().nullable(),
                       messageIds: z.array(z.string()),
+                      kind: z.enum(['pain', 'request']),
                     }),
                   ),
                 }),
@@ -1718,7 +1749,6 @@ const analyzeDiscordSentimentStep = createStep({
       issuesOpened: metrics.issuesOpened,
       issuesClosed: metrics.issuesClosed,
       pullRequests: metrics.pullRequests,
-      analysisCount: issueAnalyses.length,
       ...rollups,
       discordSentiment,
     };
@@ -1766,10 +1796,12 @@ const analyzeDiscordSentimentStep = createStep({
 
 export function formatBriefingPayload(
   report: z.infer<typeof reportWithoutBriefingSchema>,
-  recurringClusters: RecurringCluster[] = [],
+  recurringPains: RecurringCluster[] = [],
+  recurringRequests: RecurringCluster[] = [],
 ): string {
-  const { period, repo, summary, issueAnalyses, comparison, takeaways, actions } = report;
+  const { period, repo, summary, issueAnalyses, comparison, takeaways } = report;
   const lines: string[] = [];
+  const sevRank = (s: string) => (s === 'CRITICAL' ? 3 : s === 'MAJOR' ? 2 : 1);
 
   lines.push(`# Weekly OSS report — period ${period.start} → ${period.end}`);
   lines.push(`Generated: ${report.generatedAt}`);
@@ -1789,12 +1821,12 @@ export function formatBriefingPayload(
   );
   lines.push('');
 
-  lines.push('## Analyzed');
+  lines.push('## New issue intake (classified)');
   const t = summary.typeCounts;
-  lines.push(`Total analyzed: ${summary.analysisCount}`);
+  lines.push(`New issues classified: ${summary.analysisCount}`);
   lines.push(`By type — Bug ${t.Bug}, Feature ${t['Feature Request']}, Question ${t.Question}`);
   const sev = summary.bugSeverityCounts;
-  lines.push(`Bug severity — Critical ${sev.CRITICAL}, Major ${sev.MAJOR}, Minor ${sev.MINOR}`);
+  lines.push(`New bug severity — Critical ${sev.CRITICAL}, Major ${sev.MAJOR}, Minor ${sev.MINOR}`);
   const res = summary.resolutionCounts;
   lines.push(
     `Closed in window: ${summary.closedInWindowCount} (fixed ${res.fixed}, wontfix ${res.wontfix}, duplicate ${res.duplicate}, stale ${res.stale}, unknown ${res.unknown})`,
@@ -1818,22 +1850,74 @@ export function formatBriefingPayload(
     lines.push('');
   }
 
-  const topIssues = [...issueAnalyses]
-    .sort((a, b) => {
-      const sevRank = (s: string) => (s === 'CRITICAL' ? 3 : s === 'MAJOR' ? 2 : 1);
-      const at = a.type === 'Bug' ? 1 : 0;
-      const bt = b.type === 'Bug' ? 1 : 0;
-      if (at !== bt) return bt - at;
-      return sevRank(b.severity) - sevRank(a.severity);
-    })
-    .slice(0, 15);
-  if (topIssues.length > 0) {
-    lines.push('## Top issues this week');
-    for (const issue of topIssues) {
-      const tags: string[] = [issue.type, issue.severity, issue.issueState, issue.lifecycle];
-      if (issue.closureReason) tags.push(`closure=${issue.closureReason}`);
+  // Closed-this-window bugs — drives wins citations
+  const closedBugs = issueAnalyses
+    .filter(
+      (i) => i.type === 'Bug' && (i.lifecycle === 'closed' || i.lifecycle === 'opened-and-closed'),
+    )
+    .sort((a, b) => sevRank(b.severity) - sevRank(a.severity));
+  if (closedBugs.length > 0) {
+    lines.push('## Closed this week — bugs');
+    for (const issue of closedBugs) {
+      const closure = issue.closureReason ? ` · ${issue.closureReason}` : '';
       lines.push(
-        `- #${issue.issueNumber} [${tags.join(' · ')}] ${issue.issueTitle} — ${issue.summary}`,
+        `- #${issue.issueNumber} [${issue.severity} · ${issue.category}${closure}] ${issue.issueTitle} — ${issue.summary}`,
+      );
+    }
+    lines.push('');
+  }
+
+  // Newly opened CRITICAL + MAJOR bugs — drives watchlist citations
+  const newHighSevBugs = issueAnalyses
+    .filter(
+      (i) =>
+        i.type === 'Bug' &&
+        (i.lifecycle === 'opened' || i.lifecycle === 'opened-and-closed') &&
+        (i.severity === 'CRITICAL' || i.severity === 'MAJOR'),
+    )
+    .sort((a, b) => sevRank(b.severity) - sevRank(a.severity));
+  if (newHighSevBugs.length > 0) {
+    lines.push('## Newly opened — CRITICAL + MAJOR bugs');
+    for (const issue of newHighSevBugs) {
+      const stillOpen = issue.issueState === 'open' ? ' · still-open' : '';
+      lines.push(
+        `- #${issue.issueNumber} [${issue.severity} · ${issue.category}${stillOpen} · comments ${issue.commentCount}] ${issue.issueTitle} — ${issue.summary}`,
+      );
+    }
+    lines.push('');
+  }
+
+  // Newly opened feature requests — drives the feature-request narrative
+  const newFeatureRequests = issueAnalyses
+    .filter((i) => i.type === 'Feature Request' && i.lifecycle === 'opened')
+    .sort((a, b) => b.commentCount + b.threadMessageCount - (a.commentCount + a.threadMessageCount))
+    .slice(0, 15);
+  if (newFeatureRequests.length > 0) {
+    lines.push('## Newly opened — feature requests (top 15 by engagement)');
+    for (const issue of newFeatureRequests) {
+      lines.push(
+        `- #${issue.issueNumber} [${issue.category} · comments ${issue.commentCount}] ${issue.issueTitle} — ${issue.summary}`,
+      );
+    }
+    lines.push('');
+  }
+
+  // Hot open issues — currently-open items ranked by severity + engagement
+  const hotOpen = issueAnalyses
+    .filter((i) => i.issueState === 'open')
+    .sort((a, b) => {
+      const d = sevRank(b.severity) - sevRank(a.severity);
+      if (d !== 0) return d;
+      return (
+        b.threadMessageCount + b.commentCount - (a.threadMessageCount + a.commentCount)
+      );
+    })
+    .slice(0, 10);
+  if (hotOpen.length > 0) {
+    lines.push('## Hot open issues (top 10 by severity + engagement)');
+    for (const issue of hotOpen) {
+      lines.push(
+        `- #${issue.issueNumber} [${issue.type} · ${issue.severity} · ${issue.category} · comments ${issue.commentCount} · thread ${issue.threadMessageCount}] ${issue.issueTitle} — ${issue.summary}`,
       );
     }
     lines.push('');
@@ -1848,20 +1932,44 @@ export function formatBriefingPayload(
     lines.push(`Δ vs last: ${ds.weekOverWeek}`);
   }
   if (ds.aspects.length > 0) {
+    lines.push('');
     for (const aspect of ds.aspects) {
-      const positives = aspect.positives.map((s) => s.headline).join('; ') || 'none';
-      const pains = aspect.painPoints
-        .map((p) => p.headline)
-        .join('; ') || 'none';
-      lines.push(`- ${aspect.aspect}: positives — ${positives}; pains — ${pains}`);
+      lines.push(`### ${aspect.aspect} (${aspect.sentiment})`);
+      if (aspect.positives.length) {
+        lines.push('Positives:');
+        for (const p of aspect.positives) {
+          const detail = p.detail ? ` — ${p.detail}` : '';
+          lines.push(`- [cites ${p.messageIds.length}] ${p.headline}${detail}`);
+        }
+      }
+      if (aspect.painPoints.length) {
+        const pains = aspect.painPoints.filter((p) => p.kind === 'pain');
+        const requests = aspect.painPoints.filter((p) => p.kind === 'request');
+        if (pains.length) {
+          lines.push('Pains:');
+          for (const p of pains) {
+            const detail = p.detail ? ` — ${p.detail}` : '';
+            lines.push(`- [cites ${p.messageIds.length}] ${p.headline}${detail}`);
+          }
+        }
+        if (requests.length) {
+          lines.push('Feature requests:');
+          for (const r of requests) {
+            const detail = r.detail ? ` — ${r.detail}` : '';
+            lines.push(`- [cites ${r.messageIds.length}] ${r.headline}${detail}`);
+          }
+        }
+      }
+      lines.push('');
     }
+  } else {
+    lines.push('');
   }
-  lines.push('');
 
   lines.push('## Deterministic deltas vs prior report');
   const fmt = (n: number | null) => (n === null ? 'n/a' : n >= 0 ? `+${n}` : `${n}`);
   lines.push(
-    `Issues opened Δ ${fmt(comparison.issuesOpenedDelta)}, closed Δ ${fmt(comparison.issuesClosedDelta)}, backlog Δ ${fmt(comparison.backlogDelta)}, analyzed Δ ${fmt(comparison.analysisCountDelta)}, critical bugs Δ ${fmt(comparison.criticalBugDelta)}, major bugs Δ ${fmt(comparison.majorBugDelta)}, PRs merged Δ ${fmt(comparison.mergedPrDelta)}`,
+    `Issues opened Δ ${fmt(comparison.issuesOpenedDelta)}, closed Δ ${fmt(comparison.issuesClosedDelta)}, backlog Δ ${fmt(comparison.backlogDelta)}, new issues classified Δ ${fmt(comparison.analysisCountDelta)}, new critical bugs Δ ${fmt(comparison.criticalBugDelta)}, new major bugs Δ ${fmt(comparison.majorBugDelta)}, PRs merged Δ ${fmt(comparison.mergedPrDelta)}`,
   );
   if (comparison.sentimentChanged !== null) {
     lines.push(
@@ -1873,38 +1981,43 @@ export function formatBriefingPayload(
   lines.push('## Pre-computed takeaways');
   if (takeaways.improved.length) lines.push(`Improved: ${takeaways.improved.join(' | ')}`);
   if (takeaways.regressed.length) lines.push(`Regressed: ${takeaways.regressed.join(' | ')}`);
-  if (takeaways.watch.length) lines.push(`Watch: ${takeaways.watch.join(' | ')}`);
   lines.push('');
 
-  lines.push('## Pre-computed action items');
-  if (actions.priorityIssues.length)
-    lines.push(`Priority issues: ${actions.priorityIssues.map((n) => `#${n}`).join(', ')}`);
-  if (actions.recommendedActions.length)
-    lines.push(`Recommended actions: ${actions.recommendedActions.join(' | ')}`);
-  if (actions.needsDocsAttention.length)
-    lines.push(`Docs attention: ${actions.needsDocsAttention.join(' | ')}`);
-  if (actions.recurringPainAreas.length)
-    lines.push(`Recurring pain: ${actions.recurringPainAreas.join(' | ')}`);
-  lines.push('');
-
-  lines.push('## Recurring (pre-qualified — allow-list)');
-  lines.push(
-    'These clusters were computed deterministically: each appeared in >=2 distinct prior weeks AND this week. Output EXACTLY one recurring entry per cluster below — do not add, infer, or remove items.',
-  );
-  if (recurringClusters.length === 0) {
-    lines.push('None this week.');
-  } else {
-    for (const cluster of recurringClusters) {
-      const sourceTag = cluster.currentSignal.source === 'github' ? 'GITHUB' : 'DISCORD';
-      const related = cluster.relatedSignals
-        .map((r) => `${r.label} (${r.periodEnd})`)
-        .join('; ');
-      lines.push(
-        `- [${sourceTag}] ${cluster.currentSignal.label} — seen ${cluster.weeksSeen} weeks (prior: ${cluster.priorWeeks.join(', ')})`,
-      );
-      lines.push(`  related: ${related || 'none'}`);
+  const renderClusterBlock = (
+    heading: string,
+    intro: string,
+    clusters: RecurringCluster[],
+  ) => {
+    lines.push(heading);
+    lines.push(intro);
+    if (clusters.length === 0) {
+      lines.push('None this week.');
+    } else {
+      for (const cluster of clusters) {
+        const sourceTag = cluster.currentSignal.source === 'github' ? 'GITHUB' : 'DISCORD';
+        const related = cluster.relatedSignals
+          .map((r) => `${r.label} (${r.periodEnd})`)
+          .join('; ');
+        lines.push(
+          `- [${sourceTag}] ${cluster.currentSignal.label} — seen ${cluster.weeksSeen} weeks (prior: ${cluster.priorWeeks.join(', ')})`,
+        );
+        lines.push(`  related: ${related || 'none'}`);
+      }
     }
-  }
+    lines.push('');
+  };
+
+  renderClusterBlock(
+    '## Recurring pains (pre-qualified — allow-list)',
+    'These pain clusters appeared in >=2 distinct prior weeks AND this week. Output EXACTLY one entry in `recurring` per cluster below — do not add, infer, or remove items.',
+    recurringPains,
+  );
+
+  renderClusterBlock(
+    '## Recurring feature requests (pre-qualified — allow-list)',
+    'These feature-request clusters appeared in >=2 distinct prior weeks AND this week. Output EXACTLY one entry in `recurringRequests` per cluster below — do not add, infer, or remove items.',
+    recurringRequests,
+  );
 
   return lines.join('\n');
 }
@@ -1921,8 +2034,9 @@ const generateBriefingStep = createStep({
     const { correctionsApplied, ...reportFields } = inputData;
 
     // Deterministic recurring gate: cluster this week's signals against the
-    // last N stored weeks. Only clusters spanning >=2 prior weeks + this week
-    // qualify, and they form a strict allow-list for the agent.
+    // last N stored weeks, separated by kind (pain vs. request). Only clusters
+    // spanning >=2 prior weeks + this week qualify, and they form a strict
+    // allow-list for the agent.
     const currentSignals = extractWeekSignals(reportFields);
     const priorWeeks = await loadRecentReports(
       mastra,
@@ -1930,16 +2044,15 @@ const generateBriefingStep = createStep({
       RECURRING_LOOKBACK_WEEKS,
       logger,
     );
-    const recurringClusters = computeRecurringClusters(
+    const { pains: recurringPains, requests: recurringRequests } = computeRecurringClusters(
       currentSignals,
       reportFields.signalEmbeddings,
       priorWeeks,
       RECURRING_SIMILARITY_THRESHOLD,
     );
-    const allowedClusterIds = new Set(recurringClusters.map((c) => c.currentSignal.id));
 
     try {
-      const payload = formatBriefingPayload(reportFields, recurringClusters);
+      const payload = formatBriefingPayload(reportFields, recurringPains, recurringRequests);
       const result = await briefingAgent.generate(payload, {
         structuredOutput: {
           schema: briefingAgentOutputSchema,
@@ -1949,13 +2062,16 @@ const generateBriefingStep = createStep({
       if (result.object) {
         // Agent emits the minimal recurring shape; code fills weeksSeen and
         // relatedSignals from the qualified clusters in the block below.
-        briefing = {
-          ...result.object,
-          recurring: result.object.recurring.map((item) => ({
+        const hydrateAgentList = (items: z.infer<typeof briefingRecurringAgentSchema>[]) =>
+          items.map((item) => ({
             ...item,
             weeksSeen: 0,
             relatedSignals: [],
-          })),
+          }));
+        briefing = {
+          ...result.object,
+          recurring: hydrateAgentList(result.object.recurring),
+          recurringRequests: hydrateAgentList(result.object.recurringRequests),
           correctionsApplied: [],
         };
       } else {
@@ -1969,24 +2085,26 @@ const generateBriefingStep = createStep({
       });
     }
 
-    // Code is authoritative: replace the agent's recurring list with one entry
-    // per qualified cluster, keeping the agent's phrasing where it cited the
-    // right cluster and falling back to the deterministic label otherwise.
+    // Code is authoritative: replace each agent-emitted recurring list with
+    // one entry per qualified cluster, keeping the agent's phrasing where it
+    // cited the right cluster and falling back to the deterministic label.
     if (briefing) {
-      const phrasingById = new Map<string, string>();
-      for (const item of briefing.recurring) {
-        const matchId =
-          item.source === 'github' && item.issueNumber != null
-            ? `gh:${item.issueNumber}`
-            : null;
-        if (matchId && allowedClusterIds.has(matchId)) {
-          phrasingById.set(matchId, item.text);
+      const rebuildFromClusters = (
+        agentList: z.infer<typeof briefingRecurringSchema>[],
+        clusters: RecurringCluster[],
+      ): z.infer<typeof briefingRecurringSchema>[] => {
+        const allowedIds = new Set(clusters.map((c) => c.currentSignal.id));
+        const phrasingById = new Map<string, string>();
+        for (const item of agentList) {
+          const matchId =
+            item.source === 'github' && item.issueNumber != null
+              ? `gh:${item.issueNumber}`
+              : null;
+          if (matchId && allowedIds.has(matchId)) {
+            phrasingById.set(matchId, item.text);
+          }
         }
-      }
-
-      briefing = {
-        ...briefing,
-        recurring: recurringClusters.map((cluster) => ({
+        return clusters.map((cluster) => ({
           text: phrasingById.get(cluster.currentSignal.id) ?? cluster.theme,
           source: cluster.currentSignal.source,
           issueNumber: cluster.issueNumber ?? null,
@@ -1999,7 +2117,13 @@ const generateBriefingStep = createStep({
             url: r.url,
             periodEnd: r.periodEnd,
           })),
-        })),
+        }));
+      };
+
+      briefing = {
+        ...briefing,
+        recurring: rebuildFromClusters(briefing.recurring, recurringPains),
+        recurringRequests: rebuildFromClusters(briefing.recurringRequests, recurringRequests),
       };
     }
 

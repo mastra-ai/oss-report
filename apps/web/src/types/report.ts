@@ -109,6 +109,7 @@ export interface SentimentSignal {
   detail: string | null;
   messageIds: string[];
   messageUrls: string[];
+  kind?: 'pain' | 'request';
 }
 
 export interface AspectBreakdown {
@@ -225,6 +226,7 @@ export interface Briefing {
   regressions: BriefingRegression[];
   watchlist: BriefingWatch[];
   recurring: BriefingRecurring[];
+  recurringRequests: BriefingRecurring[];
   talkingPoints: string[];
   correctionsApplied?: BriefingCorrection[];
 }

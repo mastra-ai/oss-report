@@ -19,11 +19,11 @@ export function AnalysisStats({ summary }: { summary: ReportSummary }) {
       {/* Composition */}
       <div className="p-5">
         <div className="flex items-baseline justify-between">
-          <h3 className="text-sm font-semibold">Issue types</h3>
-          <span className="mono text-xs text-muted-foreground">{total} reviewed</span>
+          <h3 className="text-sm font-semibold">New issue types</h3>
+          <span className="mono text-xs text-muted-foreground">{total} classified</span>
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          Unique issues from this report window.
+          Classified issues opened during this report window.
         </p>
 
         <div className="mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted">
@@ -64,12 +64,12 @@ export function AnalysisStats({ summary }: { summary: ReportSummary }) {
       {/* Severity */}
       <div className="p-5">
         <div className="flex items-baseline justify-between">
-          <h3 className="text-sm font-semibold">Bug severity</h3>
+          <h3 className="text-sm font-semibold">New bug severity</h3>
           <span className="mono text-xs text-muted-foreground">{totalBugs} classified bugs</span>
         </div>
 
         {totalBugs === 0 ? (
-          <p className="mt-4 text-sm text-muted-foreground">No bugs on file.</p>
+          <p className="mt-4 text-sm text-muted-foreground">No new bugs classified.</p>
         ) : (
           <>
             <div className="mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted">

@@ -67,7 +67,7 @@ parent message:
                       | "models" | "auth" | "cli" | "voice" | "community" | "other",
       "sentiment": "positive" | "negative" | "mixed",
       "positives": SignalItem[],
-      "painPoints": SignalItem[]
+      "painPoints": PainItem[]
     }
   ]
 }
@@ -78,6 +78,29 @@ SignalItem = {
     OR null if the headline is fully self-contained.",
   "messageIds": ["<id>", ...]   // at least one, pulled from the input
 }
+
+PainItem = SignalItem & {
+  "kind": "pain" | "request"
+}
+
+# Pain vs. request — how to classify the "kind" field
+
+Every item in "painPoints" must be tagged with a "kind":
+
+- "pain": the user is hitting friction with existing functionality. Bugs, broken
+  behavior, confusing UX, missing docs, things that worked before and don't now.
+  Examples: "Studio crashes on cold start", "Memory backend setup is unclear",
+  "Workflow suspend hangs in production".
+
+- "request": the user is asking for new functionality that doesn't exist yet.
+  Wishes, feature asks, "would be nice if", "I wish X supported Y", "are there
+  plans to add Z?". Examples: "Wants Postgres backend for memory", "Asking for
+  per-step retry config", "Would like first-class Slack adapter".
+
+If something sits between the two (e.g., "memory only supports LibSQL and I
+can't use it" — that's a feature gap blocking real work), prefer "request".
+Reserve "pain" for things that are broken, confusing, or regressed about
+functionality that already ships.
 
 # Rules
 

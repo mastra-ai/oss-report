@@ -101,7 +101,6 @@ export const mastra = new Mastra({
           const editedSummary = {
             ...(original.summary as Record<string, unknown>),
             ...rollups,
-            analysisCount: editedAnalyses.length,
           } as Parameters<typeof computeComparison>[0];
 
           const previousReport = await loadPreviousReport(

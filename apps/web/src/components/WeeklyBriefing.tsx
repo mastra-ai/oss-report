@@ -31,7 +31,9 @@ const severityTone: Record<BriefingSeverity, string> = {
 };
 
 export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Props) {
-  const hasRecurring = briefing.recurring.length > 0;
+  const recurringPains = briefing.recurring ?? [];
+  const recurringRequests = briefing.recurringRequests ?? [];
+  const hasRecurring = recurringPains.length > 0 || recurringRequests.length > 0;
   const showTalkingPoints = presentMode && briefing.talkingPoints.length > 0;
   const metricChips = buildMetricChips(comparison);
 
@@ -70,15 +72,31 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
       </header>
 
       {hasRecurring && (
-        <div className="border-b px-5 py-4">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Recurring
-          </h3>
-          <ul className="mt-2 space-y-3 text-sm">
-            {briefing.recurring.map((item, i) => (
-              <RecurringItem key={i} item={item} />
-            ))}
-          </ul>
+        <div className="border-b px-5 py-4 space-y-4">
+          {recurringPains.length > 0 && (
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Recurring pains
+              </h3>
+              <ul className="mt-2 space-y-3 text-sm">
+                {recurringPains.map((item, i) => (
+                  <RecurringItem key={i} item={item} />
+                ))}
+              </ul>
+            </div>
+          )}
+          {recurringRequests.length > 0 && (
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Recurring feature requests
+              </h3>
+              <ul className="mt-2 space-y-3 text-sm">
+                {recurringRequests.map((item, i) => (
+                  <RecurringItem key={i} item={item} />
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 

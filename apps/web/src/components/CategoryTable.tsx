@@ -8,7 +8,7 @@ export function CategoryTable({ categories }: { categories: CategoryBreakdown[] 
   return (
     <section className="rounded-md border">
       <div className="flex items-baseline justify-between border-b px-5 py-3">
-        <h3 className="text-sm font-semibold">Categories</h3>
+        <h3 className="text-sm font-semibold">New issue categories</h3>
         <span className="mono text-xs text-muted-foreground">
           {categories.length} total
         </span>

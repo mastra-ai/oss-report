@@ -88,7 +88,7 @@ export function ReportListItem({
             PRs merged
           </span>
           <span>
-            <span className="mono tabular-nums text-foreground">{entry.summary.analysisCount}</span> analyzed
+            <span className="mono tabular-nums text-foreground">{entry.summary.analysisCount}</span> new classified
           </span>
           {totalBugs > 0 && (
             <span>
