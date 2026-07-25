@@ -3,6 +3,7 @@ node_modules
 dist
 .mastra
 .env.development
+.env.production
 .env
 *.db
 *.db-*
@@ -18,3 +19,4 @@ apps/web/dist
 # agent tooling
 .claude/
 skills-lock.json
+apps/mastra/src/mastra/public/app/

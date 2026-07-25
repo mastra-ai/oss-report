@@ -10,6 +10,7 @@
     "dev": "mastra dev",
     "build": "mastra build",
     "start": "mastra start",
+    "deploy": "mastra deploy --env-file .env.production --skip-preflight -y",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "@mastra/loggers": "^1.2.0",
     "@mastra/memory": "^1.23.1",
     "@mastra/observability": "^1.16.2",
+    "@mastra/pg": "^1.17.0",
     "discord.js": "^14.27.0",
     "octokit": "^5.0.5",
     "zod": "^4.4.3"

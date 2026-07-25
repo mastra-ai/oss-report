@@ -4,6 +4,7 @@ import path from 'node:path';
 
 export default defineConfig({
   plugins: [react()],
+  base: './',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -11,5 +12,10 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+  },
+  build: {
+    // Emitted into the Mastra app's public dir so the Mastra server serves the UI.
+    outDir: path.resolve(__dirname, '../mastra/src/mastra/public/app'),
+    emptyOutDir: true,
   },
 });

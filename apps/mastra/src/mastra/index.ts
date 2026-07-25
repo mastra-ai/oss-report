@@ -1,4 +1,8 @@
+import { readFile } from 'node:fs/promises';
+import { dirname, extname, join, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Mastra } from '@mastra/core/mastra';
+import { PostgresStore } from '@mastra/pg';
 import { registerApiRoute } from '@mastra/core/server';
 import { MastraCompositeStore } from '@mastra/core/storage';
 import { LibSQLStore } from '@mastra/libsql';
@@ -15,6 +19,27 @@ import {
   loadPreviousReport,
   ossReportWorkflow,
 } from './workflows/oss-report';
+
+// Candidate directories that may contain the built web app:
+// - dev: cwd is src/mastra/public, which holds app/
+// - prod (mastra start / Mastra Cloud): the bundle sits in .mastra/output next
+//   to the copied app/ dir, so resolve relative to the bundle itself too.
+const APP_ROOTS = [
+  join(process.cwd(), 'app'),
+  join(dirname(fileURLToPath(import.meta.url)), 'app'),
+];
+
+const APP_MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json',
+  '.map': 'application/json',
+  '.woff2': 'font/woff2',
+};
 
 type IssueEdit = {
   issueNumber: number;
@@ -34,11 +59,15 @@ export const mastra = new Mastra({
   },
   storage: new MastraCompositeStore({
     id: 'composite-storage',
-    default: new LibSQLStore({
-      id: 'mastra-storage',
-      url: process.env.TURSO_DATABASE_URL!,
-      authToken: process.env.TURSO_AUTH_TOKEN!,
-    }),
+    default: process.env.DATABASE_URL ?
+      new PostgresStore({
+        id: 'mastra-storage',
+        connectionString: process.env.DATABASE_URL!,
+      })
+      : new LibSQLStore({
+        id: 'mastra-storage',
+        url: process.env.LOCAL_DATABASE_URL!
+      }),
   }),
   logger: new PinoLogger({
     name: 'Mastra',
@@ -46,6 +75,35 @@ export const mastra = new Mastra({
   }),
   server: {
     port: 4115,
+    middleware: [
+      // Serve the built web app (apps/web) at /app. The Vite build outputs to
+      // src/mastra/public/app, which is the server cwd in dev and gets copied
+      // into .mastra/output for production builds.
+      async (c, next) => {
+        const reqPath = c.req.path;
+        if (reqPath !== '/app' && !reqPath.startsWith('/app/')) return next();
+
+        // Relative asset paths in index.html resolve against the directory of
+        // the page URL, so /app must be normalized to /app/.
+        if (reqPath === '/app') return c.redirect('/app/');
+
+        const rel = reqPath === '/app/' ? 'index.html' : reqPath.slice('/app/'.length);
+        for (const root of APP_ROOTS) {
+          const filePath = normalize(join(root, rel));
+          if (!filePath.startsWith(root)) continue;
+          try {
+            const data = await readFile(filePath);
+            const contentType = APP_MIME_TYPES[extname(filePath)] ?? 'application/octet-stream';
+            return new Response(new Uint8Array(data), {
+              headers: { 'Content-Type': contentType },
+            });
+          } catch {
+            // try the next candidate root
+          }
+        }
+        return next();
+      },
+    ],
     apiRoutes: [
       registerApiRoute('/runs/:runId/rebrief', {
         method: 'POST',

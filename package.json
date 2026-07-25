@@ -7,9 +7,10 @@
     "dev": "concurrently -n mastra,web -c magenta,cyan \"pnpm --filter @oss-report/mastra dev\" \"pnpm --filter @oss-report/web dev\"",
     "dev:mastra": "pnpm --filter @oss-report/mastra dev",
     "dev:web": "pnpm --filter @oss-report/web dev",
-    "build": "pnpm -r build",
+    "build": "pnpm build:web && pnpm build:mastra",
     "build:mastra": "pnpm --filter @oss-report/mastra build",
     "build:web": "pnpm --filter @oss-report/web build",
+    "deploy": "pnpm build:web && pnpm --filter @oss-report/mastra deploy",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
