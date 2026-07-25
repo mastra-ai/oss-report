@@ -1,5 +1,5 @@
 {
-  "name": "@oss-report/mastra",
+  "name": "oss-report",
   "version": "1.0.0",
   "private": true,
   "type": "module",
