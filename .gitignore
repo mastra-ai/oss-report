@@ -13,6 +13,7 @@ dist
 
 # web app build output
 apps/web/dist
+*.tsbuildinfo
 
 # agent tooling
 .claude/
