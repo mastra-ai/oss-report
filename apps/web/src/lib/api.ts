@@ -8,10 +8,48 @@ class MastraApiError extends Error {
   }
 }
 
+// When the app is hosted behind Mastra platform auth, API calls fail with 401
+// once the session cookie is missing/expired. Mirror Studio's behavior: try a
+// silent token refresh first, otherwise send the browser to the sign-in page
+// with a redirect back to the current URL.
+let handlingUnauthorized = false;
+async function handleUnauthorized(): Promise<void> {
+  if (handlingUnauthorized) return;
+  handlingUnauthorized = true;
+  try {
+    const refresh = await fetch(`${MASTRA_BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (refresh.ok) {
+      window.location.reload();
+      return;
+    }
+    const params = new URLSearchParams({ redirect_uri: window.location.href });
+    const res = await fetch(`${MASTRA_BASE_URL}/api/auth/sso/login?${params}`, {
+      credentials: 'include',
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { url?: string };
+      if (data.url) {
+        window.location.href = data.url;
+        return;
+      }
+    }
+  } catch {
+    // No auth endpoints available (e.g. local dev) — leave the error visible.
+  }
+  handlingUnauthorized = false;
+}
+
 function wrapError(err: unknown, fallback: string): never {
   // Network/fetch errors from the SDK look like generic TypeErrors when the
   // server is unreachable. Surface a friendlier message to the UI.
   const message = err instanceof Error ? err.message : String(err);
+  if (/status:\s*401\b/.test(message)) {
+    void handleUnauthorized();
+    throw new MastraApiError('Your session has expired — redirecting to sign-in…');
+  }
   if (/fetch|network|ECONNREFUSED|Failed to fetch/i.test(message)) {
     throw new MastraApiError(
       `Could not reach the Mastra server at ${MASTRA_BASE_URL}. Is it running? (\`pnpm dev:mastra\`)`,
@@ -213,6 +251,10 @@ export async function rebriefRun(
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      void handleUnauthorized();
+      throw new MastraApiError('Your session has expired — redirecting to sign-in…');
+    }
     const message =
       data && typeof data === 'object' && 'error' in data
         ? String((data as { error: unknown }).error)
