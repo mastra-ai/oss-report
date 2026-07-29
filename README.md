@@ -36,6 +36,8 @@ Optional tuning:
 - `OSS_REPORT_MAX_GENERAL_MESSAGES` (default 200)
 - `OSS_REPORT_MAX_THREAD_MESSAGES` (default 50)
 - `OSS_REPORT_RECURRING_THRESHOLD` — cosine similarity threshold for recurring detection (default 0.82)
+- `SLACK_WEBHOOK_URL` — Slack incoming webhook; when set, the weekly scheduled run posts its briefing to Slack
+- `OSS_REPORT_PUBLIC_URL` — public base URL of the Mastra server, used for report links in Slack messages
 
 ## Develop
 
@@ -73,10 +75,16 @@ Either use the **Generate report** form on the web app's home page (defaults to 
 
 All fields are optional:
 
-- `start` / `end` — ISO timestamps (defaults to the last 30 days)
+- `start` / `end` — ISO timestamps (defaults to the last 7 days)
 - `maxIssueAnalyses` — cap on issues analyzed per run (default 500)
 
 Every successful run immediately shows up on the web app's home page.
+
+## Scheduled runs
+
+`ossReportWorkflow` declares a weekly schedule: it runs automatically every **Monday at 09:00 UTC** over the trailing 7 days. Scheduled runs post a briefing summary (headline, key metrics, takeaways, recommended actions, and a report link when `OSS_REPORT_PUBLIC_URL` is set) to Slack via `SLACK_WEBHOOK_URL`. Manual runs — from the web app or Studio — never post to Slack.
+
+Schedules can be inspected, paused, and resumed from Mastra Studio under **Workflows → Schedules**, including the trigger history of past fires. Slack delivery is best-effort: a failed post is logged but does not fail the run.
 
 ## Browse reports
 
@@ -92,7 +100,3 @@ pnpm build          # both apps
 pnpm build:mastra
 pnpm build:web
 ```
-
-## Roadmap
-
-- Schedule weekly runs (GitHub Actions cron or Mastra scheduled workflow).

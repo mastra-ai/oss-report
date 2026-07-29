@@ -11,6 +11,7 @@ import {
   getGithubClient,
   getReportRepo,
 } from '../shared/github';
+import { formatSlackReportMessage, postToSlackWebhook } from '../shared/slack';
 
 const ISSUE_ANALYSIS_CONCURRENCY = 5;
 const RECURRING_LOOKBACK_WEEKS = 6;
@@ -152,6 +153,7 @@ const workflowInputSchema = z.object({
   start: z.string().optional(),
   end: z.string().optional(),
   maxIssueAnalyses: z.number().int().positive().max(500).optional(),
+  postToSlack: z.boolean().optional(),
 });
 
 const aspectEnum = z.enum([
@@ -293,6 +295,7 @@ const reportContextSchema = z.object({
   config: z.object({
     generalChannelId: z.string().nullable(),
     maxIssueAnalyses: z.number(),
+    postToSlack: z.boolean(),
   }),
 });
 
@@ -336,7 +339,7 @@ function getWindow(input: z.infer<typeof workflowInputSchema>) {
   const end = input.end ? new Date(input.end) : new Date();
   const start = input.start
     ? new Date(input.start)
-    : new Date(end.getTime() - 1000 * 60 * 60 * 24 * 30);
+    : new Date(end.getTime() - 1000 * 60 * 60 * 24 * 7);
 
   return { start, end };
 }
@@ -1071,6 +1074,7 @@ const resolveReportContextStep = createStep({
       config: {
         generalChannelId: process.env.DISCORD_GENERAL_CHANNEL_ID || null,
         maxIssueAnalyses: inputData.maxIssueAnalyses ?? 500,
+        postToSlack: inputData.postToSlack ?? false,
       },
     };
 
@@ -2141,11 +2145,48 @@ const generateBriefingStep = createStep({
   },
 });
 
+const postToSlackStep = createStep({
+  id: 'post-to-slack',
+  inputSchema: reportSchema,
+  outputSchema: reportSchema,
+  stateSchema: reportStateSchema,
+  execute: async ({ inputData, mastra, state, runId }) => {
+    const logger = mastra?.getLogger();
+
+    if (!state.config?.postToSlack) {
+      logger?.debug?.('Slack posting not requested for this run; skipping');
+      return inputData;
+    }
+
+    if (!process.env.SLACK_WEBHOOK_URL) {
+      logger?.warn?.('Slack posting requested but SLACK_WEBHOOK_URL is not set; skipping');
+      return inputData;
+    }
+
+    const payload = formatSlackReportMessage(inputData, runId);
+    const posted = await postToSlackWebhook(payload, logger);
+
+    if (posted) {
+      logger?.info(`Posted OSS report for ${inputData.period.label} to Slack`);
+    }
+
+    // Slack delivery is best-effort: a failed post is logged but never fails
+    // the run, so the report itself still lands as a successful run.
+    return inputData;
+  },
+});
+
 export const ossReportWorkflow = createWorkflow({
   id: 'oss-report-workflow',
   inputSchema: workflowInputSchema,
   outputSchema: reportSchema,
   stateSchema: reportStateSchema,
+  // Generate the report automatically every Monday at 09:00 UTC and post it to Slack.
+  schedule: {
+    cron: '0 9 * * 1',
+    timezone: 'UTC',
+    inputData: { postToSlack: true },
+  },
 })
   .then(resolveReportContextStep)
   .then(collectRepoMetricsStep)
@@ -2155,4 +2196,5 @@ export const ossReportWorkflow = createWorkflow({
   .then(fetchDiscordMessagesStep)
   .then(analyzeDiscordSentimentStep)
   .then(generateBriefingStep)
+  .then(postToSlackStep)
   .commit();
