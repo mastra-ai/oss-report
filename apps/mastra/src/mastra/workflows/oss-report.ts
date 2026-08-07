@@ -151,6 +151,9 @@ export const briefingSchema = briefingAgentOutputSchema.extend({
 const workflowInputSchema = z.object({
   start: z.string().optional(),
   end: z.string().optional(),
+  // 'week-to-date' computes the window at run time: most recent Monday 00:00
+  // UTC through now. Used by the weekly schedule, where inputData is static.
+  window: z.enum(['week-to-date']).optional(),
   maxIssueAnalyses: z.number().int().positive().max(500).optional(),
 });
 
@@ -332,11 +335,21 @@ const issueCandidateSchema = z.object({
 
 // ---- Helpers ----
 
+// Most recent Monday 00:00 UTC relative to `now`.
+function startOfWeekUtc(now: Date): Date {
+  const daysSinceMonday = (now.getUTCDay() + 6) % 7;
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMonday),
+  );
+}
+
 function getWindow(input: z.infer<typeof workflowInputSchema>) {
   const end = input.end ? new Date(input.end) : new Date();
   const start = input.start
     ? new Date(input.start)
-    : new Date(end.getTime() - 1000 * 60 * 60 * 24 * 30);
+    : input.window === 'week-to-date'
+      ? startOfWeekUtc(end)
+      : new Date(end.getTime() - 1000 * 60 * 60 * 24 * 30);
 
   return { start, end };
 }
@@ -2146,6 +2159,12 @@ export const ossReportWorkflow = createWorkflow({
   inputSchema: workflowInputSchema,
   outputSchema: reportSchema,
   stateSchema: reportStateSchema,
+  // Weekly report: fires Friday 3pm ET covering Monday 00:00 UTC through fire time.
+  schedule: {
+    cron: '0 15 * * 5',
+    timezone: 'UTC',
+    inputData: { window: 'week-to-date' },
+  },
 })
   .then(resolveReportContextStep)
   .then(collectRepoMetricsStep)
