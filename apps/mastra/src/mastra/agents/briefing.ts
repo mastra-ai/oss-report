@@ -92,5 +92,5 @@ export const briefingAgent = new Agent({
       counts) over your own counting.
     - Never fabricate issue numbers, PR references, or quote text.
   `,
-  model: 'openrouter/openai/gpt-5.4',
+  model: 'openrouter/openai/gpt-5.6-terra',
 });

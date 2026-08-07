@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.30.1",
   "scripts": {
-    "dev": "concurrently -n mastra,web -c magenta,cyan \"pnpm --filter @oss-report/mastra dev\" \"pnpm --filter @oss-report/web dev\"",
+    "dev": "pnpm --parallel --stream dev",
     "dev:mastra": "pnpm --filter @oss-report/mastra dev",
     "dev:web": "pnpm --filter @oss-report/web dev",
     "build": "pnpm build:web && pnpm build:mastra",
@@ -12,9 +12,6 @@
     "build:web": "pnpm --filter @oss-report/web build",
     "deploy": "pnpm build:web && pnpm --filter @oss-report/mastra deploy",
     "typecheck": "pnpm -r typecheck"
-  },
-  "devDependencies": {
-    "concurrently": "^9.2.4"
   },
   "engines": {
     "node": ">=22.13.0"

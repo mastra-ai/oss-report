@@ -120,5 +120,5 @@ functionality that already ships.
 - "overall" reflects the window as a whole, weighted by volume and severity. "unknown"
   is valid if there's almost nothing to go on.
   `,
-  model: 'openrouter/openai/gpt-5.4',
+  model: 'openrouter/openai/gpt-5.6-terra',
 });

@@ -101,5 +101,5 @@ export const issueThreadAnalysisAgent = new Agent({
     Ground your closureReason in the GitHub state_reason, closing comments, or linked PRs
     present in the context. Do not speculate beyond the supplied content.
   `,
-  model: 'openrouter/openai/gpt-5.4',
+  model: 'openrouter/openai/gpt-5.6-terra',
 });
