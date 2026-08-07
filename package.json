@@ -10,7 +10,7 @@
     "build": "pnpm build:web && pnpm build:mastra",
     "build:mastra": "pnpm --filter @oss-report/mastra build",
     "build:web": "pnpm --filter @oss-report/web build",
-    "deploy": "pnpm build:web && pnpm --filter @oss-report/mastra deploy",
+    "deploy": "pnpm build:web && pnpm --filter @oss-report/mastra run deploy",
     "typecheck": "pnpm -r typecheck"
   },
   "engines": {
