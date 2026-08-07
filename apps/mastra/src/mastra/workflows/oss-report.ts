@@ -63,7 +63,6 @@ const comparisonSchema = z.object({
   mergedPrDelta: z.number().nullable(),
   analysisCountDelta: z.number().nullable(),
   criticalBugDelta: z.number().nullable(),
-  majorBugDelta: z.number().nullable(),
   sentimentChanged: z.boolean().nullable(),
   sentimentDeltaSummary: z.string().nullable(),
 });
@@ -930,7 +929,6 @@ export function computeComparison(
       mergedPrDelta: null,
       analysisCountDelta: null,
       criticalBugDelta: null,
-      majorBugDelta: null,
       sentimentChanged: null,
       sentimentDeltaSummary: null,
     };
@@ -942,7 +940,6 @@ export function computeComparison(
     mergedPrDelta: delta(summary.pullRequests.merged, previousReport.summary.pullRequests.merged),
     analysisCountDelta: delta(summary.analysisCount, previousReport.summary.analysisCount),
     criticalBugDelta: delta(summary.bugSeverityCounts.CRITICAL, previousReport.summary.bugSeverityCounts.CRITICAL),
-    majorBugDelta: delta(summary.bugSeverityCounts.MAJOR, previousReport.summary.bugSeverityCounts.MAJOR),
     sentimentChanged:
       summary.discordSentiment.overall !== previousReport.summary.discordSentiment.overall,
     sentimentDeltaSummary:
@@ -1036,9 +1033,6 @@ export function buildTakeaways(args: {
   }
   if ((comparison.criticalBugDelta ?? 0) > 0) {
     regressed.push(`Critical bugs increased by ${comparison.criticalBugDelta}.`);
-  }
-  if ((comparison.majorBugDelta ?? 0) > 0) {
-    regressed.push(`Major bugs increased by ${comparison.majorBugDelta}.`);
   }
   if (summary.discordSentiment.overall === 'negative') {
     regressed.push('Discord sentiment turned negative in the general channel.');
@@ -2056,7 +2050,7 @@ export function formatBriefingPayload(
   lines.push('## Deterministic deltas vs prior report');
   const fmt = (n: number | null) => (n === null ? 'n/a' : n >= 0 ? `+${n}` : `${n}`);
   lines.push(
-    `Issues opened Δ ${fmt(comparison.issuesOpenedDelta)}, closed Δ ${fmt(comparison.issuesClosedDelta)}, backlog Δ ${fmt(comparison.backlogDelta)}, new issues classified Δ ${fmt(comparison.analysisCountDelta)}, new critical bugs Δ ${fmt(comparison.criticalBugDelta)}, new major bugs Δ ${fmt(comparison.majorBugDelta)}, PRs merged Δ ${fmt(comparison.mergedPrDelta)}`,
+    `Issues opened Δ ${fmt(comparison.issuesOpenedDelta)}, closed Δ ${fmt(comparison.issuesClosedDelta)}, backlog Δ ${fmt(comparison.backlogDelta)}, new issues classified Δ ${fmt(comparison.analysisCountDelta)}, new critical bugs Δ ${fmt(comparison.criticalBugDelta)}, PRs merged Δ ${fmt(comparison.mergedPrDelta)}`,
   );
   if (comparison.sentimentChanged !== null) {
     lines.push(

@@ -264,20 +264,6 @@ function buildMetricChips(comparison: Comparison): MetricChip[] {
           icon: AlertTriangle,
         }
       : null,
-    comparison.majorBugDelta !== null
-      ? {
-          label: 'major bugs',
-          value: formatSignedDelta(comparison.majorBugDelta),
-          tone:
-            comparison.majorBugDelta < 0
-              ? 'positive'
-              : comparison.majorBugDelta > 0
-                ? 'warning'
-                : 'neutral',
-          weight: Math.abs(comparison.majorBugDelta) * 2,
-          icon: AlertTriangle,
-        }
-      : null,
     comparison.backlogDelta !== null
       ? {
           label: 'backlog',

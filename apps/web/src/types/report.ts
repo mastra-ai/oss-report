@@ -61,7 +61,6 @@ export interface Comparison {
   mergedPrDelta: number | null;
   analysisCountDelta: number | null;
   criticalBugDelta: number | null;
-  majorBugDelta: number | null;
   sentimentChanged: boolean | null;
   sentimentDeltaSummary: string | null;
 }
