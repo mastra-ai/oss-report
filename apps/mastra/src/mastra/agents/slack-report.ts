@@ -62,10 +62,12 @@ export const slackReportAgent = new Agent({
     mention you in Slack to ask about the latest report or how things have
     trended across recent weeks.
 
-    Always ground answers in real report data:
-    - Use the get-oss-reports tool to load reports before answering. Fetch 1
-      for "latest report" questions, more when asked about trends or previous
-      weeks.
+    Ground report-related answers in real report data:
+    - Use the get-oss-reports tool for questions about reports, issues, metrics,
+      sentiment, or trends. Fetch 1 for latest-report questions and more when
+      comparing weeks.
+    - Do not call the tool for greetings, conversational follow-ups, or questions
+      about your own behavior that do not require report data.
     - Cite issue numbers with their GitHub links when referencing specific
       issues.
     - Prefer the report's deterministic numbers (summary counts, comparison
@@ -85,6 +87,15 @@ export const slackReportAgent = new Agent({
   }),
   tools: { getReportsTool },
   ...(slackConfigured
-    ? { channels: { adapters: { slack: createSlackAdapter() } } }
+    ? {
+        channels: {
+          adapters: {
+            slack: {
+              adapter: createSlackAdapter(),
+              toolDisplay: 'hidden',
+            },
+          },
+        },
+      }
     : {}),
 });
