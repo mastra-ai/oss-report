@@ -73,6 +73,22 @@ function parseSnapshot(snapshot: unknown): Record<string, unknown> | null {
   return null;
 }
 
+// Evented-engine runs (used since the report schedule was added) store the
+// workflow result as a step envelope with the report under `output`; older
+// runs store the report directly.
+function unwrapRunResult(result: unknown): unknown {
+  if (
+    result &&
+    typeof result === 'object' &&
+    'output' in result &&
+    'status' in result &&
+    'payload' in result
+  ) {
+    return (result as { output: unknown }).output;
+  }
+  return result;
+}
+
 function isReport(value: unknown): value is Report {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -116,7 +132,7 @@ export async function fetchReportIndex(): Promise<ReportIndexEntry[]> {
   const entries: ReportIndexEntry[] = [];
   for (const run of response.runs) {
     const snapshot = parseSnapshot(run.snapshot);
-    const result = snapshot?.result;
+    const result = unwrapRunResult(snapshot?.result);
     if (!isReport(result)) continue;
     entries.push(reportToIndexEntry(run.runId, result));
   }
@@ -278,8 +294,9 @@ export async function fetchReport(runId: string): Promise<Report> {
       `Workflow run ${runId} is not successful (status: ${state.status}).`,
     );
   }
-  if (!isReport(state.result)) {
+  const result = unwrapRunResult(state.result);
+  if (!isReport(result)) {
     throw new MastraApiError(`Workflow run ${runId} did not produce a valid report.`);
   }
-  return state.result;
+  return result;
 }

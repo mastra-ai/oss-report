@@ -1,6 +1,6 @@
 import { MastraClient } from '@mastra/client-js';
 
-export const WORKFLOW_ID = 'ossReportWorkflow';
+export const WORKFLOW_ID = 'oss-report-workflow';
 
 export const MASTRA_BASE_URL =
   (import.meta.env.VITE_MASTRA_API_URL as string | undefined) ??

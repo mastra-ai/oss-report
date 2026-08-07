@@ -10,6 +10,7 @@ import { PinoLogger } from '@mastra/loggers';
 import { briefingAgent } from './agents/briefing';
 import { discordSentimentAgent } from './agents/discord-sentiment';
 import { issueThreadAnalysisAgent } from './agents/issue-thread-analysis';
+import { slackReportAgent } from './agents/slack-report';
 import {
   applyIssueEdits,
   buildActions,
@@ -18,6 +19,8 @@ import {
   computeIssueRollups,
   loadPreviousReport,
   ossReportWorkflow,
+  slackDigestWorkflow,
+  unwrapRunResult,
 } from './workflows/oss-report';
 
 // Candidate directories that may contain the built web app:
@@ -53,9 +56,13 @@ export const mastra = new Mastra({
     briefingAgent,
     discordSentimentAgent,
     issueThreadAnalysisAgent,
+    slackReportAgent,
   },
   workflows: {
-    ossReportWorkflow,
+    // The evented engine (required by the schedule) resolves workflows by
+    // their `id`, so registration keys must match each workflow's `id`.
+    'oss-report-workflow': ossReportWorkflow,
+    'slack-digest-workflow': slackDigestWorkflow,
   },
   storage: new MastraCompositeStore({
     id: 'composite-storage',
@@ -129,7 +136,7 @@ export const mastra = new Mastra({
             }
           }
 
-          const workflow = m.getWorkflow('ossReportWorkflow');
+          const workflow = m.getWorkflow('oss-report-workflow');
           const stored = await workflow.getWorkflowRunById(runId);
           if (!stored) {
             return c.json({ error: 'run not found' }, 404);
@@ -138,7 +145,7 @@ export const mastra = new Mastra({
             return c.json({ error: 'run is not in success state' }, 409);
           }
 
-          const original = stored.result as Record<string, unknown> & {
+          const original = unwrapRunResult(stored.result) as Record<string, unknown> & {
             issueAnalyses?: unknown;
             summary?: unknown;
             period?: { start: string; end: string };

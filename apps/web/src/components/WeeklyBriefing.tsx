@@ -4,7 +4,6 @@ import { cn, formatNumber } from '@/lib/utils';
 import type {
   Briefing,
   BriefingRecurring,
-  BriefingSeverity,
   Comparison,
 } from '@/types/report';
 
@@ -23,12 +22,6 @@ interface MetricChip {
   weight: number;
   icon: typeof TrendingUp;
 }
-
-const severityTone: Record<BriefingSeverity, string> = {
-  critical: 'text-red-700 bg-red-50 border-red-200',
-  major: 'text-amber-700 bg-amber-50 border-amber-200',
-  minor: 'text-muted-foreground bg-muted border-border',
-};
 
 export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Props) {
   const recurringPains = briefing.recurring ?? [];
@@ -100,7 +93,7 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
         </div>
       )}
 
-      <div className="grid gap-x-6 gap-y-5 px-5 py-5 md:grid-cols-3">
+      <div className="grid gap-x-6 gap-y-5 px-5 py-5 md:grid-cols-2">
         <Column
           title="Wins"
           empty="No standout wins this week."
@@ -110,20 +103,11 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
           }))}
         />
         <Column
-          title="Regressions"
-          empty="No regressions worth flagging."
+          title="Setbacks"
+          empty="No setbacks worth flagging."
           items={briefing.regressions.map(r => ({
             text: r.text,
             meta: r.evidence,
-            badge: { label: r.severity, tone: severityTone[r.severity] },
-          }))}
-        />
-        <Column
-          title="Watchlist"
-          empty="Nothing on the watchlist."
-          items={briefing.watchlist.map(w => ({
-            text: w.text,
-            meta: w.why,
           }))}
         />
       </div>
@@ -152,7 +136,6 @@ export function WeeklyBriefing({ briefing, comparison, presentMode = false }: Pr
 interface ColumnItem {
   text: string;
   meta?: string | null;
-  badge?: { label: string; tone: string };
 }
 
 function Column({
@@ -175,16 +158,7 @@ function Column({
         <ul className="mt-2 space-y-2 text-sm">
           {items.map((item, i) => (
             <li key={i} className="leading-snug">
-              <div className="flex items-start gap-2">
-                {item.badge && (
-                  <span
-                    className={`mt-0.5 shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${item.badge.tone}`}
-                  >
-                    {item.badge.label}
-                  </span>
-                )}
-                <span>{item.text}</span>
-              </div>
+              <div>{item.text}</div>
               {item.meta && (
                 <div className="mt-0.5 pl-0 text-xs text-muted-foreground">{item.meta}</div>
               )}

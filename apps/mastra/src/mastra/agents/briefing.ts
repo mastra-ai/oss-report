@@ -14,9 +14,10 @@ export const briefingAgent = new Agent({
     team sync. Base every claim on this week's payload, which already groups
     the data for you:
       • "## Closed this week — bugs": cite these in wins.
-      • "## Newly opened — CRITICAL + MAJOR bugs": cite these in the watchlist.
+      • "## Newly opened — CRITICAL + MAJOR bugs": cite these in regressions.
       • "## Newly opened — feature requests": use these for direction signals.
-      • "## Hot open issues": citations for ongoing watchlist items.
+      • "## Hot open issues": background context on ongoing issues; useful for
+        talking points, not a standalone section.
       • "## Discord sentiment": per-aspect positives / pains / feature requests.
       • "## Deterministic deltas vs prior report": authoritative numbers.
       • "## Recurring pains" and "## Recurring feature requests": pre-qualified
@@ -34,25 +35,17 @@ export const briefingAgent = new Agent({
       Empty array if nothing genuinely improved this week. Prefer citing
       closed-this-week bugs by number when relevant.
 
-    - regressions: 0-3 short bullets about what got WORSE this week compared
-      to last week, with:
-      - text: concrete sentence
+    - regressions: shown to readers as "Setbacks" — 0-3 short bullets about
+      what got WORSE this week compared to last week, with:
+      - text: concrete sentence (write "setback", not "regression", unless the
+        item is an actual code regression)
       - evidence: optional supporting fact
-      - severity: "critical" | "major" | "minor"
-      A regression MUST be anchored to a deterministic delta from the
+      A setback MUST be anchored to a deterministic delta from the
       "## Deterministic deltas vs prior report" section (e.g. backlog up,
-      critical bugs up, close rate down) or to CRITICAL bug intake this week.
-      An open issue that simply remains unresolved is NOT a regression — it
-      belongs in the watchlist. Never cite the same issue number in both
-      regressions and watchlist. Empty array if nothing got worse.
-
-    - watchlist: 0-3 items the team should keep an eye on, with:
-      - text: what to watch
-      - why: why it matters (blocker status, age, citation count)
-      Prefer hot open issues or aspects with active Discord pains. This is the
-      home for ongoing open issues, including newly opened CRITICAL/MAJOR bugs
-      that remain open. Do NOT paraphrase the "Pre-computed takeaways" section
-      back into the watchlist.
+      critical bugs up, close rate down) or to newly opened CRITICAL/MAJOR bug
+      intake this week (cite the issue number). An open issue that simply
+      remains unresolved from a prior week is NOT a setback — leave it out.
+      Empty array if nothing got worse.
 
     - recurring: The "## Recurring pains (pre-qualified — allow-list)" section
       of the payload lists clusters that were computed DETERMINISTICALLY in
@@ -70,8 +63,8 @@ export const briefingAgent = new Agent({
           - text: a short description (≤ 20 words) of the recurring pain/topic.
         • Do NOT use trajectory language ("worsening", "easing", "back after a
           quiet week"). Just describe the topic.
-        • Prefer NOT to duplicate a recurring topic verbatim in regressions or
-          watchlist — pick the single best home for each topic.
+        • Prefer NOT to duplicate a recurring topic verbatim in regressions —
+          pick the single best home for each topic.
 
     - recurringRequests: Same rules as \`recurring\`, but sourced from the
       "## Recurring feature requests (pre-qualified — allow-list)" section.
@@ -82,7 +75,7 @@ export const briefingAgent = new Agent({
     - talkingPoints: 3-5 ordered bullets, written in spoken-presentation voice
       (short sentences, no markdown, no jargon, no numbers in parens). This is
       the script the maintainer will read aloud. Order matters: lead with the
-      headline, end with what to watch.
+      headline, end with the most important unresolved risk.
 
     Rules:
     - Be honest about quiet weeks. "No major regression" is a valid headline.

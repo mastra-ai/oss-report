@@ -180,8 +180,6 @@ export interface ReportSummary {
   discordSentiment: DiscordSentiment;
 }
 
-export type BriefingSeverity = 'critical' | 'major' | 'minor';
-
 export interface BriefingWin {
   text: string;
   evidence: string | null;
@@ -190,12 +188,6 @@ export interface BriefingWin {
 export interface BriefingRegression {
   text: string;
   evidence: string | null;
-  severity: BriefingSeverity;
-}
-
-export interface BriefingWatch {
-  text: string;
-  why: string;
 }
 
 export interface BriefingRelatedSignal {
@@ -224,7 +216,6 @@ export interface Briefing {
   headline: string;
   wins: BriefingWin[];
   regressions: BriefingRegression[];
-  watchlist: BriefingWatch[];
   recurring: BriefingRecurring[];
   recurringRequests: BriefingRecurring[];
   talkingPoints: string[];

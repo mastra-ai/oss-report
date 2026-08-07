@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@chat-adapter/slack": "^4.36.0",
     "@mastra/core": "^1.57.0",
     "@mastra/duckdb": "^1.6.0",
     "@mastra/evals": "^1.7.0",

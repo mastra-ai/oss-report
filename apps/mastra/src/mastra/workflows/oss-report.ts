@@ -11,6 +11,7 @@ import {
   getGithubClient,
   getReportRepo,
 } from '../shared/github';
+import type { SlackCardChild, SlackCardElement } from '@chat-adapter/slack/blocks';
 
 const ISSUE_ANALYSIS_CONCURRENCY = 5;
 const RECURRING_LOOKBACK_WEEKS = 6;
@@ -86,8 +87,6 @@ const operationalHealthSchema = z.object({
   closedWithin30Days: z.number(),
 });
 
-const briefingSeverityEnum = z.enum(['critical', 'major', 'minor']);
-
 const briefingWinSchema = z.object({
   text: z.string(),
   evidence: z.string().nullable(),
@@ -96,12 +95,6 @@ const briefingWinSchema = z.object({
 const briefingRegressionSchema = z.object({
   text: z.string(),
   evidence: z.string().nullable(),
-  severity: briefingSeverityEnum,
-});
-
-const briefingWatchSchema = z.object({
-  text: z.string(),
-  why: z.string(),
 });
 
 const briefingRelatedSignalSchema = z.object({
@@ -136,7 +129,6 @@ export const briefingAgentOutputSchema = z.object({
   headline: z.string(),
   wins: z.array(briefingWinSchema),
   regressions: z.array(briefingRegressionSchema),
-  watchlist: z.array(briefingWatchSchema),
   recurring: z.array(briefingRecurringAgentSchema),
   recurringRequests: z.array(briefingRecurringAgentSchema),
   talkingPoints: z.array(z.string()),
@@ -423,13 +415,32 @@ function parseRunSnapshot(snapshot: unknown): Record<string, unknown> | null {
   return null;
 }
 
+/**
+ * Normalize a stored run's `result`. Default-engine runs store the workflow
+ * output directly; evented-engine runs (used since the schedule was added)
+ * store a step envelope `{ startedAt, payload, status, endedAt, output }`
+ * with the report under `output`.
+ */
+export function unwrapRunResult(result: unknown): unknown {
+  if (
+    result &&
+    typeof result === 'object' &&
+    'output' in result &&
+    'status' in result &&
+    'payload' in result
+  ) {
+    return (result as { output: unknown }).output;
+  }
+  return result;
+}
+
 export async function loadPreviousReport(
   mastra: { getWorkflow?: (id: string) => unknown } | undefined,
   currentPeriod: { start: Date; end: Date },
   logger?: { info?: (message: string) => void; warn?: (message: string) => void },
 ): Promise<z.infer<typeof reportSchema> | null> {
   try {
-    const workflow = mastra?.getWorkflow?.('ossReportWorkflow') as
+    const workflow = mastra?.getWorkflow?.('oss-report-workflow') as
       | { listWorkflowRuns?: (args: unknown) => Promise<{ runs: Array<{ snapshot?: unknown; createdAt?: string }> }> }
       | undefined;
     if (!workflow?.listWorkflowRuns) return null;
@@ -446,7 +457,7 @@ export async function loadPreviousReport(
     const candidates = (runs ?? [])
       .map(run => {
         const snapshot = parseRunSnapshot(run.snapshot);
-        const result = snapshot?.result as z.infer<typeof reportSchema> | undefined;
+        const result = unwrapRunResult(snapshot?.result) as z.infer<typeof reportSchema> | undefined;
         const createdAt = run.createdAt ? new Date(run.createdAt).getTime() : 0;
         return { result, createdAt };
       })
@@ -494,6 +505,69 @@ export async function loadPreviousReport(
   } catch (error) {
     logger?.warn?.(`Failed to load previous report context: ${String(error)}`);
     return null;
+  }
+}
+
+/**
+ * Load the most recent stored reports (newest first, current runs included),
+ * deduped so overlapping re-runs of the same week collapse to the freshest
+ * run. Used by the Slack report agent to answer questions about past reports.
+ */
+export async function loadStoredReports(
+  mastra: { getWorkflow?: (id: string) => unknown } | undefined,
+  limit: number,
+  logger?: { warn?: (message: string) => void },
+): Promise<Array<z.infer<typeof reportSchema>>> {
+  try {
+    const workflow = mastra?.getWorkflow?.('oss-report-workflow') as
+      | { listWorkflowRuns?: (args: unknown) => Promise<{ runs: Array<{ snapshot?: unknown; createdAt?: string }> }> }
+      | undefined;
+    if (!workflow?.listWorkflowRuns) return [];
+
+    const { runs } = await workflow.listWorkflowRuns({
+      status: 'success',
+      perPage: 50,
+      page: 0,
+    });
+
+    const candidates = (runs ?? [])
+      .map(run => {
+        const snapshot = parseRunSnapshot(run.snapshot);
+        const result = unwrapRunResult(snapshot?.result) as z.infer<typeof reportSchema> | undefined;
+        const createdAt = run.createdAt ? new Date(run.createdAt).getTime() : 0;
+        return { result, createdAt };
+      })
+      .filter((entry): entry is { result: z.infer<typeof reportSchema>; createdAt: number } => {
+        const result = entry.result;
+        if (!result?.period?.start || !result.period.end || !result.summary?.discordSentiment) return false;
+        return !Number.isNaN(new Date(result.period.end).getTime());
+      })
+      .sort((a, b) => {
+        const endDiff = new Date(b.result.period.end).getTime() - new Date(a.result.period.end).getTime();
+        if (endDiff !== 0) return endDiff;
+        return b.createdAt - a.createdAt;
+      });
+
+    const deduped: Array<{ result: z.infer<typeof reportSchema>; createdAt: number }> = [];
+    for (const entry of candidates) {
+      const start = new Date(entry.result.period.start).getTime();
+      const end = new Date(entry.result.period.end).getTime();
+      const overlapIndex = deduped.findIndex(kept => {
+        const keptStart = new Date(kept.result.period.start).getTime();
+        const keptEnd = new Date(kept.result.period.end).getTime();
+        return start < keptEnd && keptStart < end;
+      });
+      if (overlapIndex === -1) {
+        deduped.push(entry);
+      } else if (entry.createdAt > deduped[overlapIndex].createdAt) {
+        deduped[overlapIndex] = entry;
+      }
+    }
+
+    return deduped.slice(0, limit).map(entry => entry.result);
+  } catch (error) {
+    logger?.warn?.(`Failed to load stored reports: ${String(error)}`);
+    return [];
   }
 }
 
@@ -579,7 +653,7 @@ export async function loadRecentReports(
   logger?: { info?: (message: string) => void; warn?: (message: string) => void },
 ): Promise<RecentWeek[]> {
   try {
-    const workflow = mastra?.getWorkflow?.('ossReportWorkflow') as
+    const workflow = mastra?.getWorkflow?.('oss-report-workflow') as
       | { listWorkflowRuns?: (args: unknown) => Promise<{ runs: Array<{ snapshot?: unknown; createdAt?: string }> }> }
       | undefined;
     if (!workflow?.listWorkflowRuns) return [];
@@ -596,7 +670,7 @@ export async function loadRecentReports(
     const candidates = (runs ?? [])
       .map(run => {
         const snapshot = parseRunSnapshot(run.snapshot);
-        const result = snapshot?.result as z.infer<typeof reportSchema> | undefined;
+        const result = unwrapRunResult(snapshot?.result) as z.infer<typeof reportSchema> | undefined;
         const createdAt = run.createdAt ? new Date(run.createdAt).getTime() : 0;
         return { result, createdAt };
       })
@@ -1880,7 +1954,7 @@ export function formatBriefingPayload(
     lines.push('');
   }
 
-  // Newly opened CRITICAL + MAJOR bugs — drives watchlist citations
+  // Newly opened CRITICAL + MAJOR bugs — drives regression citations
   const newHighSevBugs = issueAnalyses
     .filter(
       (i) =>
@@ -2154,12 +2228,280 @@ const generateBriefingStep = createStep({
   },
 });
 
+/** Escape Slack mrkdwn control characters in dynamic text. */
+function slackEscape(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Deterministic Slack digest rendered from the finished report as a Block Kit
+ * card: header, 2-column metric fields, sections, and a link button. Charts
+ * are posted separately as an image gallery (see buildDigestChartUrls).
+ */
+export function buildSlackDigestCard(
+  report: z.infer<typeof reportSchema>,
+  runId?: string,
+): SlackCardElement {
+  const { repo, period, summary, comparison, briefing, takeaways } = report;
+  const fmtDate = (iso: string) => iso.slice(0, 10);
+  // Compact delta badge vs last week, e.g. " (▲4)". Omitted when unchanged.
+  const delta = (d: number | null) =>
+    d == null || d === 0 ? '' : ` (${d > 0 ? '▲' : '▼'}${Math.abs(d)})`;
+
+  const children: SlackCardChild[] = [];
+
+  if (briefing?.headline) {
+    children.push({ type: 'text', style: 'bold', content: slackEscape(briefing.headline) });
+  }
+
+  children.push({
+    type: 'fields',
+    children: [
+      {
+        type: 'field',
+        label: 'Issues opened',
+        value: `${summary.issuesOpened.total}${delta(comparison.issuesOpenedDelta)}`,
+      },
+      {
+        type: 'field',
+        label: 'Issues closed',
+        value: `${summary.issuesClosed.total}${delta(comparison.issuesClosedDelta)}`,
+      },
+      {
+        type: 'field',
+        label: 'PRs merged',
+        value: `${summary.pullRequests.merged}${delta(comparison.mergedPrDelta)}`,
+      },
+      {
+        type: 'field',
+        label: 'Open backlog',
+        value: `${summary.openBacklog}${delta(comparison.backlogDelta)}`,
+      },
+    ],
+  });
+
+  // Native chart of the headline flow metrics vs last week (the deltas are
+  // current − previous, so previous = current − delta). Backlog is excluded:
+  // it's a level, not a flow, and its scale would dwarf the weekly bars.
+  // Skipped when there is no prior report to compare against.
+  if (
+    comparison.issuesOpenedDelta != null &&
+    comparison.issuesClosedDelta != null &&
+    comparison.mergedPrDelta != null
+  ) {
+    const metrics = [
+      { label: 'Issues opened', current: summary.issuesOpened.total, d: comparison.issuesOpenedDelta },
+      { label: 'Issues closed', current: summary.issuesClosed.total, d: comparison.issuesClosedDelta },
+      { label: 'PRs merged', current: summary.pullRequests.merged, d: comparison.mergedPrDelta },
+    ];
+    children.push({
+      type: 'chart',
+      title: 'This week vs last week',
+      chart: {
+        type: 'bar',
+        categories: metrics.map((m) => m.label),
+        series: [
+          { name: 'This week', data: metrics.map((m) => ({ label: m.label, value: m.current })) },
+          { name: 'Last week', data: metrics.map((m) => ({ label: m.label, value: m.current - m.d })) },
+        ],
+      },
+    });
+  }
+
+  const bulletSection = (heading: string, items: string[]) => {
+    if (items.length === 0) return;
+    children.push({ type: 'divider' });
+    children.push({
+      type: 'text',
+      content: `*${heading}*\n${items.map((item) => `•  ${item}`).join('\n')}`,
+    });
+  };
+
+  if (briefing) {
+    bulletSection(
+      'Wins',
+      briefing.wins.map((w) =>
+        slackEscape(w.evidence ? `${w.text} — ${w.evidence}` : w.text),
+      ),
+    );
+    bulletSection(
+      'Setbacks',
+      briefing.regressions.map(
+        (r) => `${slackEscape(r.text)}${r.evidence ? ` — ${slackEscape(r.evidence)}` : ''}`,
+      ),
+    );
+    const recurringLine = (item: z.infer<typeof briefingRecurringSchema>) => {
+      const cite =
+        item.issueNumber != null && item.issueUrl
+          ? ` (<${item.issueUrl}|#${item.issueNumber}>)`
+          : item.aspect
+            ? ` (${slackEscape(item.aspect)})`
+            : '';
+      return `${slackEscape(item.text)}${cite} — seen ${item.weeksSeen} weeks`;
+    };
+    bulletSection('Recurring pains', briefing.recurring.map(recurringLine));
+    bulletSection('Recurring requests', briefing.recurringRequests.map(recurringLine));
+  } else {
+    // Briefing generation failed — fall back to the deterministic takeaways.
+    bulletSection('Improved', takeaways.improved.map(slackEscape));
+    bulletSection('Regressed', takeaways.regressed.map(slackEscape));
+    bulletSection('Watch', takeaways.watch.map(slackEscape));
+  }
+
+  // SLACK_REPORT_APP_URL is the web app base (e.g. https://host/app/). The
+  // app uses a hash router where each report lives at #/reports/<runId>.
+  const appUrl = process.env.SLACK_REPORT_APP_URL;
+  if (appUrl) {
+    const base = appUrl.endsWith('/') ? appUrl : `${appUrl}/`;
+    children.push({ type: 'divider' });
+    children.push({
+      type: 'actions',
+      children: [
+        {
+          type: 'link-button',
+          label: 'View full report',
+          style: 'primary',
+          url: runId ? `${base}#/reports/${runId}` : base,
+        },
+      ],
+    });
+  }
+
+  return {
+    type: 'card',
+    title: `OSS Report · ${fmtDate(period.start)} → ${fmtDate(period.end)}`,
+    subtitle: `${repo.owner}/${repo.name} weekly community report`,
+    children,
+  };
+}
+
+// The digest step accepts a report plus optional re-post context, so it can
+// run both as the tail of the weekly workflow (context omitted) and inside
+// slackDigestWorkflow, where a stored report is re-posted on demand.
+const postSlackDigestInputSchema = reportSchema.extend({
+  /** Run id of the report being posted; defaults to the current run. */
+  reportRunId: z.string().optional(),
+  /** Post even for rebriefed reports (used by manual re-posts). */
+  forcePost: z.boolean().optional(),
+});
+
+const postSlackDigestStep = createStep({
+  id: 'post-slack-digest',
+  inputSchema: postSlackDigestInputSchema,
+  outputSchema: reportSchema,
+  stateSchema: reportStateSchema,
+  execute: async ({ inputData, mastra, runId }) => {
+    const { reportRunId, forcePost, ...report } = inputData;
+    const logger = mastra?.getLogger();
+    const channelId = process.env.SLACK_REPORT_CHANNEL_ID;
+    if (!channelId) return report;
+
+    // Rebrief runs (time travel with corrections) already posted a digest for
+    // this period; skip re-posting to avoid duplicate messages in the channel.
+    if (!forcePost && report.briefing?.correctionsApplied?.length) {
+      logger?.info('Skipping Slack digest for rebrief run with corrections');
+      return report;
+    }
+
+    const chat = mastra?.getAgent('slackReportAgent')?.getChannels()?.sdk;
+    if (!chat) {
+      logger?.warn(
+        'SLACK_REPORT_CHANNEL_ID is set but the Slack channel is not configured — set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET',
+      );
+      return report;
+    }
+
+    try {
+      const digest = buildSlackDigestCard(report, reportRunId ?? runId);
+      // SlackCardElement extends the Chat SDK's base CardElement with
+      // Slack-only children (charts); the Slack adapter renders them natively.
+      await chat.channel(`slack:${channelId}`).post({ card: digest as never });
+      logger?.info('Posted Slack digest', { channelId });
+    } catch (error) {
+      // Delivery is best-effort: never fail the report because Slack is down.
+      logger?.error('Slack digest post failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return report;
+  },
+});
+
+const loadStoredReportStep = createStep({
+  id: 'load-stored-report',
+  inputSchema: z.object({
+    /** Run id of a stored report; omit to use the latest successful run. */
+    runId: z.string().optional(),
+  }),
+  outputSchema: postSlackDigestInputSchema,
+  execute: async ({ inputData, mastra }) => {
+    const workflow = mastra?.getWorkflow?.('oss-report-workflow') as
+      | {
+          getWorkflowRunById?: (
+            runId: string,
+          ) => Promise<{ status?: string; result?: unknown } | null>;
+          listWorkflowRuns?: (
+            args: unknown,
+          ) => Promise<{
+            runs: Array<{ runId: string; snapshot?: unknown; createdAt?: string | Date }>;
+          }>;
+        }
+      | undefined;
+    if (!workflow) throw new Error('oss-report-workflow not registered');
+
+    if (inputData.runId) {
+      const stored = await workflow.getWorkflowRunById?.(inputData.runId);
+      if (!stored || stored.status !== 'success' || !stored.result) {
+        throw new Error(`No successful report found for run ${inputData.runId}`);
+      }
+      const report = unwrapRunResult(stored.result) as z.infer<typeof reportSchema>;
+      if (!report?.period?.start || !report.summary) {
+        throw new Error(`Run ${inputData.runId} did not produce a valid report`);
+      }
+      return { ...report, reportRunId: inputData.runId, forcePost: true };
+    }
+
+    const { runs } = (await workflow.listWorkflowRuns?.({
+      status: 'success',
+      perPage: 50,
+      page: 0,
+    })) ?? { runs: [] };
+    const latest = runs
+      .map((run) => {
+        const snapshot = parseRunSnapshot(run.snapshot);
+        return {
+          runId: run.runId,
+          createdAt: run.createdAt ? new Date(run.createdAt).getTime() : 0,
+          result: unwrapRunResult(snapshot?.result) as z.infer<typeof reportSchema> | undefined,
+        };
+      })
+      .filter((run) => run.result?.period?.start && run.result.summary)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (!latest?.result) throw new Error('No stored reports found');
+
+    return { ...latest.result, reportRunId: latest.runId, forcePost: true };
+  },
+});
+
+/**
+ * Re-post the Slack digest for an already-generated report. Run it from
+ * Studio (or the API) with an optional runId; defaults to the latest report.
+ */
+export const slackDigestWorkflow = createWorkflow({
+  id: 'slack-digest-workflow',
+  inputSchema: z.object({ runId: z.string().optional() }),
+  outputSchema: reportSchema,
+})
+  .then(loadStoredReportStep)
+  .then(postSlackDigestStep)
+  .commit();
+
 export const ossReportWorkflow = createWorkflow({
   id: 'oss-report-workflow',
   inputSchema: workflowInputSchema,
   outputSchema: reportSchema,
   stateSchema: reportStateSchema,
-  // Weekly report: fires Friday 3pm ET covering Monday 00:00 UTC through fire time.
+  // Weekly report: fires Friday 3pm UTC covering Monday 00:00 UTC through fire time.
   schedule: {
     cron: '0 15 * * 5',
     timezone: 'UTC',
@@ -2174,4 +2516,5 @@ export const ossReportWorkflow = createWorkflow({
   .then(fetchDiscordMessagesStep)
   .then(analyzeDiscordSentimentStep)
   .then(generateBriefingStep)
+  .then(postSlackDigestStep)
   .commit();
