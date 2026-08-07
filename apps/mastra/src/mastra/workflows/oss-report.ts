@@ -2414,6 +2414,8 @@ const postSlackDigestInputSchema = reportSchema.extend({
   reportRunId: z.string().optional(),
   /** Post even for rebriefed reports (used by manual re-posts). */
   forcePost: z.boolean().optional(),
+  /** Slack channel id; defaults to SLACK_REPORT_CHANNEL_ID. */
+  channelId: z.string().trim().min(1).optional(),
 });
 
 const postSlackDigestStep = createStep({
@@ -2422,9 +2424,9 @@ const postSlackDigestStep = createStep({
   outputSchema: reportSchema,
   stateSchema: reportStateSchema,
   execute: async ({ inputData, mastra, runId }) => {
-    const { reportRunId, forcePost, ...report } = inputData;
+    const { reportRunId, forcePost, channelId: inputChannelId, ...report } = inputData;
     const logger = mastra?.getLogger();
-    const channelId = process.env.SLACK_REPORT_CHANNEL_ID;
+    const channelId = inputChannelId ?? process.env.SLACK_REPORT_CHANNEL_ID;
     if (!channelId) return report;
 
     // Rebrief runs (time travel with corrections) already posted a digest for
@@ -2437,7 +2439,7 @@ const postSlackDigestStep = createStep({
     const chat = mastra?.getAgent('slackReportAgent')?.getChannels()?.sdk;
     if (!chat) {
       logger?.warn(
-        'SLACK_REPORT_CHANNEL_ID is set but the Slack channel is not configured — set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET',
+        'A Slack report channel is set but the Slack adapter is not configured — set SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET',
       );
       return report;
     }
@@ -2468,6 +2470,8 @@ const loadStoredReportStep = createStep({
   inputSchema: z.object({
     /** Run id of a stored report; omit to use the latest successful run. */
     runId: z.string().optional(),
+    /** Slack channel id; omit to use SLACK_REPORT_CHANNEL_ID. */
+    channelId: z.string().trim().min(1).optional(),
   }),
   outputSchema: postSlackDigestInputSchema,
   execute: async ({ inputData, mastra }) => {
@@ -2494,7 +2498,12 @@ const loadStoredReportStep = createStep({
       if (!report?.period?.start || !report.summary) {
         throw new Error(`Run ${inputData.runId} did not produce a valid report`);
       }
-      return { ...report, reportRunId: inputData.runId, forcePost: true };
+      return {
+        ...report,
+        reportRunId: inputData.runId,
+        forcePost: true,
+        channelId: inputData.channelId,
+      };
     }
 
     const { runs } = (await workflow.listWorkflowRuns?.({
@@ -2515,17 +2524,26 @@ const loadStoredReportStep = createStep({
       .sort((a, b) => b.createdAt - a.createdAt)[0];
     if (!latest?.result) throw new Error('No stored reports found');
 
-    return { ...latest.result, reportRunId: latest.runId, forcePost: true };
+    return {
+      ...latest.result,
+      reportRunId: latest.runId,
+      forcePost: true,
+      channelId: inputData.channelId,
+    };
   },
 });
 
 /**
  * Re-post the Slack digest for an already-generated report. Run it from
- * Studio (or the API) with an optional runId; defaults to the latest report.
+ * Studio (or the API) with an optional runId and channelId; defaults to the
+ * latest report and SLACK_REPORT_CHANNEL_ID.
  */
 export const slackDigestWorkflow = createWorkflow({
   id: 'slack-digest-workflow',
-  inputSchema: z.object({ runId: z.string().optional() }),
+  inputSchema: z.object({
+    runId: z.string().optional(),
+    channelId: z.string().trim().min(1).optional(),
+  }),
   outputSchema: reportSchema,
 })
   .then(loadStoredReportStep)
