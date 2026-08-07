@@ -1,5 +1,6 @@
 import { Agent } from '@mastra/core/agent';
 import { createTool } from '@mastra/core/tools';
+import { Memory } from '@mastra/memory';
 import { createSlackAdapter } from '@chat-adapter/slack';
 import { z } from 'zod';
 import { loadStoredReports } from '../workflows/oss-report';
@@ -77,6 +78,11 @@ export const slackReportAgent = new Agent({
     when explicitly asked for detail.
   `,
   model: 'openrouter/openai/gpt-5.6-terra',
+  memory: new Memory({
+    options: {
+      lastMessages: 20,
+    },
+  }),
   tools: { getReportsTool },
   ...(slackConfigured
     ? { channels: { adapters: { slack: createSlackAdapter() } } }

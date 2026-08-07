@@ -2229,12 +2229,12 @@ function slackEscape(text: string): string {
 
 /**
  * Deterministic Slack digest rendered from the finished report as a Block Kit
- * card: header, 2-column metric fields, sections, and a link button. Charts
- * are posted separately as an image gallery (see buildDigestChartUrls).
+ * card: header, 2-column metric fields, eight-week history, sections, and a link.
  */
 export function buildSlackDigestCard(
   report: z.infer<typeof reportSchema>,
   runId?: string,
+  trendReports: Array<z.infer<typeof reportSchema>> = [],
 ): SlackCardElement {
   const { repo, period, summary, comparison, briefing, takeaways } = report;
   const fmtDate = (iso: string) => iso.slice(0, 10);
@@ -2254,12 +2254,12 @@ export function buildSlackDigestCard(
       {
         type: 'field',
         label: 'Issues opened',
-        value: `${summary.issuesOpened.total}${delta(comparison.issuesOpenedDelta)}`,
+        value: `${summary.issuesOpened.total}${delta(comparison.issuesOpenedDelta)}\nGitHub ${summary.issuesOpened.github} · Discord ${summary.issuesOpened.discord}`,
       },
       {
         type: 'field',
         label: 'Issues closed',
-        value: `${summary.issuesClosed.total}${delta(comparison.issuesClosedDelta)}`,
+        value: `${summary.issuesClosed.total}${delta(comparison.issuesClosedDelta)}\nGitHub ${summary.issuesClosed.github} · Discord ${summary.issuesClosed.discord}`,
       },
       {
         type: 'field',
@@ -2274,33 +2274,68 @@ export function buildSlackDigestCard(
     ],
   });
 
-  // Native chart of the headline flow metrics vs last week (the deltas are
-  // current − previous, so previous = current − delta). Backlog is excluded:
-  // it's a level, not a flow, and its scale would dwarf the weekly bars.
-  // Skipped when there is no prior report to compare against.
-  if (
-    comparison.issuesOpenedDelta != null &&
-    comparison.issuesClosedDelta != null &&
-    comparison.mergedPrDelta != null
-  ) {
+  // Rolling eight-week view of the headline metrics. Time runs left → right
+  // and Slack's automatically assigned series colors map consistently to metrics. Backlog
+  // is labeled "Open backlog" to distinguish the point-in-time level from the
+  // three weekly flow metrics.
+  if (trendReports.length >= 2) {
+    const labelDate = (iso: string) =>
+      new Intl.DateTimeFormat('en-US', {
+        month: 'short',
+        day: 'numeric',
+        timeZone: 'UTC',
+      }).format(new Date(iso));
+    const weeks = trendReports.slice(-8).map(week => ({
+      // Week-ending labels stay legible as the rolling window fills up.
+      label: labelDate(week.period.end),
+      summary: week.summary,
+    }));
     const metrics = [
-      { label: 'Issues opened', current: summary.issuesOpened.total, d: comparison.issuesOpenedDelta },
-      { label: 'Issues closed', current: summary.issuesClosed.total, d: comparison.issuesClosedDelta },
-      { label: 'PRs merged', current: summary.pullRequests.merged, d: comparison.mergedPrDelta },
+      { label: 'Issues opened', value: (week: (typeof weeks)[number]) => week.summary.issuesOpened.total },
+      { label: 'Issues closed', value: (week: (typeof weeks)[number]) => week.summary.issuesClosed.total },
+      { label: 'PRs merged', value: (week: (typeof weeks)[number]) => week.summary.pullRequests.merged },
+      { label: 'Open backlog', value: (week: (typeof weeks)[number]) => week.summary.openBacklog },
     ];
     children.push({
       type: 'chart',
-      title: 'This week vs last week',
+      title: `Last ${weeks.length} weeks`,
       chart: {
-        type: 'bar',
-        categories: metrics.map((m) => m.label),
-        series: [
-          { name: 'This week', data: metrics.map((m) => ({ label: m.label, value: m.current })) },
-          { name: 'Last week', data: metrics.map((m) => ({ label: m.label, value: m.current - m.d })) },
-        ],
+        type: 'line',
+        categories: weeks.map(week => week.label),
+        series: metrics.map(metric => ({
+          name: metric.label,
+          data: weeks.map(week => ({ label: week.label, value: metric.value(week) })),
+        })),
       },
     });
   }
+
+  const discordSection = () => {
+    const discord = summary.discordSentiment;
+    const sentimentLabel = discord.overall.charAt(0).toUpperCase() + discord.overall.slice(1);
+    const plural = (count: number, singular: string, pluralForm = `${singular}s`) =>
+      `${count} ${count === 1 ? singular : pluralForm}`;
+    children.push({ type: 'divider' });
+    children.push({
+      type: 'text',
+      content: `*Discord pulse*\n${slackEscape(discord.summary)}`,
+    });
+    children.push({
+      type: 'fields',
+      children: [
+        {
+          type: 'field',
+          label: 'Sentiment',
+          value: sentimentLabel,
+        },
+        {
+          type: 'field',
+          label: 'Discord activity',
+          value: `${plural(discord.messageCount, 'message')} · ${plural(discord.uniqueAuthorCount, 'contributor')}`,
+        },
+      ],
+    });
+  };
 
   const bulletSection = (heading: string, items: string[]) => {
     if (items.length === 0) return;
@@ -2324,6 +2359,7 @@ export function buildSlackDigestCard(
         (r) => `${slackEscape(r.text)}${r.evidence ? ` — ${slackEscape(r.evidence)}` : ''}`,
       ),
     );
+    discordSection();
     const recurringLine = (item: z.infer<typeof briefingRecurringSchema>) => {
       const cite =
         item.issueNumber != null && item.issueUrl
@@ -2339,6 +2375,7 @@ export function buildSlackDigestCard(
     // Briefing generation failed — fall back to the deterministic takeaways.
     bulletSection('Improved', takeaways.improved.map(slackEscape));
     bulletSection('Regressed', takeaways.regressed.map(slackEscape));
+    discordSection();
     bulletSection('Watch', takeaways.watch.map(slackEscape));
   }
 
@@ -2406,7 +2443,12 @@ const postSlackDigestStep = createStep({
     }
 
     try {
-      const digest = buildSlackDigestCard(report, reportRunId ?? runId);
+      const currentEnd = new Date(report.period.end).getTime();
+      const priorReports = (await loadStoredReports(mastra, 10, logger))
+        .filter(stored => new Date(stored.period.end).getTime() < currentEnd)
+        .slice(0, 7)
+        .reverse();
+      const digest = buildSlackDigestCard(report, reportRunId ?? runId, [...priorReports, report]);
       // SlackCardElement extends the Chat SDK's base CardElement with
       // Slack-only children (charts); the Slack adapter renders them natively.
       await chat.channel(`slack:${channelId}`).post({ card: digest as never });
