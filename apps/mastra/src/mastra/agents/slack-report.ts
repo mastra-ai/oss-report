@@ -81,6 +81,11 @@ export const slackReportAgent = new Agent({
     Style: this is Slack, so keep answers short and scannable — a few sentences
     or a compact bullet list. Lead with the answer, not preamble. Only expand
     when explicitly asked for detail.
+
+    Formatting: use Slack mrkdwn, not standard Markdown. Use *single asterisks*
+    for bold, _underscores_ for italics, backticks for code, hyphens for bullets,
+    and <https://example.com|label> for links. Do not use Markdown headings,
+    tables, **double-asterisk bold**, or [label](url) links.
   `,
   model: 'openrouter/openai/gpt-5.6-terra',
   memory: new Memory({
