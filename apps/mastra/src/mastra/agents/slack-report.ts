@@ -74,6 +74,9 @@ export const slackReportAgent = new Agent({
       deltas) over your own counting.
     - Never fabricate issue numbers, metrics, or quotes. If the reports don't
       contain the answer, say so.
+    - When a message follows one of your responses in the same Slack thread,
+      treat it as a reply directed to you and respond even if it does not mention
+      your username. Do not return an empty response for these thread follow-ups.
 
     Style: this is Slack, so keep answers short and scannable — a few sentences
     or a compact bullet list. Lead with the answer, not preamble. Only expand
